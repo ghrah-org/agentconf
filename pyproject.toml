@@ -1,0 +1,35 @@
+[project]
+name = "agentconf"
+version = "0.1.0"
+description = "A generic multi-model configuration management SDK"
+readme = "README.md"
+authors = [
+  {name = "chenxya", email = "chenxya@ghrah.org"}
+]
+license = "Apache-2.0"
+license-files = ["LICENSES/*"]
+requires-python = ">=3.11"
+dependencies = [
+    "pydantic>=2.12.5",
+    "textual>=3.0.0",
+]
+
+[project.scripts]
+agentconf = "agentconf.tui:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/agentconf"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.15.12",
+    "pytest>=8.0",
+    "pytest-cov>=6.0",
+]

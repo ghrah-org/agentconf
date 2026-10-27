@@ -30,7 +30,7 @@ class agentconfApp(App[None]):
     def __init__(self, db_path: str | None = None) -> None:
         super().__init__()
         self._db_path = db_path
-        self._config = AgentsConfig(db_path=self._db_path)
+        self._config = AgentsConfig(db_path=db_path)
 
     @property
     def config(self) -> AgentsConfig:
@@ -39,17 +39,25 @@ class agentconfApp(App[None]):
     def compose(self) -> ComposeResult:
         yield Header()
         with TabbedContent():
+            with TabPane("能力目录", id="tab-catalog"):
+                from agentconf.tui.screens.catalog_screens import CatalogScreen
+
+                yield CatalogScreen()
             with TabPane("Provider", id="tab-provider"):
                 from agentconf.tui.screens.provider_screens import ProviderScreen
+
                 yield ProviderScreen()
             with TabPane("Model", id="tab-model"):
                 from agentconf.tui.screens.model_screens import ModelScreen
+
                 yield ModelScreen()
             with TabPane("Agent", id="tab-agent"):
                 from agentconf.tui.screens.agent_screens import AgentScreen
+
                 yield AgentScreen()
             with TabPane("Resolve", id="tab-resolve"):
                 from agentconf.tui.screens.resolve_screen import ResolveScreen
+
                 yield ResolveScreen()
         db_display = self._db_path or AgentsConfig.DEFAULT_DB_PATH
         yield StatusBar(f" 已连接: {db_display}", id="status-bar")
@@ -59,9 +67,4 @@ class agentconfApp(App[None]):
         self._config.close()
 
     def show_toast(self, message: str, *, error: bool = False) -> None:
-        from textual.widgets import Static
-
-        cls = "error-toast" if error else "success-toast"
-        toast = Static(message, classes=cls, id="toast")
-        self.mount(toast)
-        self.set_timer(2.5, toast.remove)
+        self.notify(message, severity="error" if error else "information", timeout=2.5)

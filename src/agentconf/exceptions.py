@@ -10,6 +10,30 @@ class AgentsConfigError(Exception):
     pass
 
 
+class MigrationError(AgentsConfigError):
+    """配置库无法安全升级，原始数据保持不变。"""
+
+
+class CatalogError(AgentsConfigError):
+    """能力目录操作失败。"""
+
+
+class CatalogImportError(CatalogError):
+    """导入快照下载、校验或应用失败。"""
+
+
+class CapabilityNotFoundError(CatalogError):
+    """能力档案未找到。"""
+
+
+class CapabilityInUseError(CatalogError):
+    """能力档案正被绑定引用。"""
+
+
+class CapabilityTypeMismatchError(CatalogError):
+    """绑定与能力档案的类型不一致。"""
+
+
 class ProviderNotFoundError(AgentsConfigError):
     """Provider 未找到"""
     pass

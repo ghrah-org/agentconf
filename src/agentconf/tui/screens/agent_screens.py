@@ -333,7 +333,9 @@ class AgentScreen(Container):
         if not name:
             return
 
-        def _do_delete(_) -> None:
+        def _do_delete(accepted) -> None:
+            if not accepted:
+                return
             try:
                 from agentconf.tui.app import agentconfApp
 

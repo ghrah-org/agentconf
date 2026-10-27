@@ -117,3 +117,8 @@ DataTable {
     color: $accent;
     margin-bottom: 1;
 }
+
+#profile-json, #import-report {
+    height: 18;
+    min-height: 8;
+}

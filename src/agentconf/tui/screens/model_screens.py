@@ -1,8 +1,5 @@
-# SPDX-FileCopyrightText: 2026 chenxya <chenxya@ghrah.org>
-#
 # SPDX-License-Identifier: Apache-2.0
-
-"""Model Instance CRUD 界面"""
+"""模型绑定界面；能力档案由目录维护。"""
 
 from __future__ import annotations
 
@@ -10,236 +7,151 @@ import json
 
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal
-from textual.containers import Container
-from textual.widgets import (
-    Button,
-    DataTable,
-    Input,
-    Label,
-    Select,
-)
+from textual.containers import Container, Horizontal
+from textual.widgets import Button, DataTable, Input, Label, Select
 
 from agentconf.exceptions import AgentsConfigError
 from agentconf.tui.screens.dialog import ConfirmDialog, DialogScreen
 
-MODEL_TYPES = ["llm", "embedding", "rerank", "tts", "stt", "asr", "image_gen"]
+MODEL_TYPES = [
+    "llm",
+    "embedding",
+    "rerank",
+    "tts",
+    "stt",
+    "image_gen",
+    "video",
+    "realtime",
+]
 
 
 class ModelCreateDialog(DialogScreen):
-    def __init__(self) -> None:
-        super().__init__("创建 Model Instance", confirm_text="创建")
+    def __init__(self, model_name: str | None = None) -> None:
+        self._editing = model_name
+        super().__init__(
+            f"编辑绑定: {model_name}" if model_name else "创建模型绑定",
+            confirm_text="保存",
+        )
 
     def compose_body(self) -> ComposeResult:
-        yield Label("名称")
-        yield Input(placeholder="如 gpt4o", id="name")
-        yield Label("关联 Provider")
-        yield Select([], id="provider", allow_blank=True)
-        yield Label("模型标识")
-        yield Input(placeholder="如 gpt-4o", id="model_name")
+        if self._editing is None:
+            yield Label("绑定名称（全局唯一）")
+            yield Input(id="name")
+            yield Label("Provider")
+            yield Select([], id="provider")
+        else:
+            yield Label("Provider 由绑定确定；更换连接请创建新绑定。")
+        yield Label("实际请求模型标识（选档案不会修改此字段）")
+        yield Input(id="model_name")
         yield Label("模型类型")
+        types = set(MODEL_TYPES) | {
+            p.model_type for p in self.app.config.catalog_list()
+        }
+        if self._editing:
+            types.add(self.app.config.get_model(self._editing).model_type)
         yield Select(
-            [(t, t) for t in MODEL_TYPES],
+            [(t, t) for t in sorted(types)],
             id="model_type",
             allow_blank=False,
             value="llm",
         )
-        yield Label("Base URL（可选，覆盖 Provider）")
-        yield Input(placeholder="留空使用 Provider 的 Base URL", id="base_url")
-        yield Label("API Key（可选，覆盖 Provider）")
-        yield Input(
-            placeholder="留空使用 Provider 的 API Key",
-            id="api_key",
-            password=True,
-        )
-        yield Label("能力标记 JSON（可选）")
-        yield Input(
-            placeholder='如 {"supports_vision": true}',
-            id="capabilities",
-        )
+        yield Label("能力档案（留空使用类型默认值）")
+        yield Select([], id="profile", prompt="未绑定档案")
+        yield Label("LLM 默认上下文 1M，支持工具与推理；example-* 为虚构示范。")
 
     def on_mount(self) -> None:
-        try:
-            from agentconf.tui.app import agentconfApp
-
-            assert isinstance(self.app, agentconfApp)
+        if self._editing:
+            model = self.app.config.get_model(self._editing)
+            self.query_one("#model_name", Input).value = model.model_name
+            self.query_one("#model_type", Select).value = model.model_type
+            self._refresh_profiles(model.model_type)
+            self.query_one("#profile", Select).value = (
+                model.capabilities_key or Select.NULL
+            )
+        else:
             providers = self.app.config.list_providers()
             select = self.query_one("#provider", Select)
             select.set_options([(p.name, p.name) for p in providers])
             if providers:
                 select.value = providers[0].name
-        except AgentsConfigError:
-            pass
+            self._refresh_profiles("llm")
 
-    def on_confirm(self) -> None:
-        name = self.query_one("#name", Input).value.strip()
-        provider = self.query_one("#provider", Select).value
-        model_name = self.query_one("#model_name", Input).value.strip()
-        model_type = self.query_one("#model_type", Select).value
-        base_url = self.query_one("#base_url", Input).value.strip() or None
-        api_key = self.query_one("#api_key", Input).value.strip() or None
-        caps_str = self.query_one("#capabilities", Input).value.strip() or None
-
-        if not all([name, provider != Select.NULL, model_name]):
-            self._flash_error("名称、Provider、模型标识为必填")
-            return
-
-        caps_dict = None
-        if caps_str:
-            try:
-                caps_dict = json.loads(caps_str)
-            except json.JSONDecodeError:
-                self._flash_error("能力标记必须是有效的 JSON")
-                return
-
-        try:
-            from agentconf.tui.app import agentconfApp
-
-            assert isinstance(self.app, agentconfApp)
-            self.app.config.create_model(
-                provider_name=provider,
-                name=name,
-                model_name=model_name,
-                model_type=model_type,
-                base_url=base_url,
-                api_key=api_key,
-                capabilities=caps_dict,
-            )
-            self.dismiss(None)
-            self.app.show_toast(f"Model 已创建: {name}")
-        except AgentsConfigError as e:
-            self._flash_error(str(e))
-
-
-class ModelUpdateDialog(DialogScreen):
-    def __init__(self, model_name: str) -> None:
-        self._model_name = model_name
-        super().__init__(f"编辑 Model: {model_name}", confirm_text="保存")
-
-    def compose_body(self) -> ComposeResult:
-        yield Label("模型标识（留空不修改）")
-        yield Input(id="model_name")
-        yield Label("模型类型（留空不修改）")
-        yield Select(
-            [(t, t) for t in MODEL_TYPES],
-            id="model_type",
-            allow_blank=True,
+    def _refresh_profiles(self, model_type: str) -> None:
+        select = self.query_one("#profile", Select)
+        previous = select.value
+        profiles = self.app.config.catalog_list(model_type=model_type)
+        select.set_options(
+            [
+                (
+                    f"{'[示例] ' if p.entry_kind == 'example' else ''}{p.display_name} ({p.model_key})",
+                    p.model_key,
+                )
+                for p in profiles
+            ]
         )
-        yield Label("关联 Provider（留空不修改）")
-        yield Select([], id="provider", allow_blank=True)
-        yield Label("Base URL（留空不修改）")
-        yield Input(id="base_url")
-        yield Label("API Key（留空不修改）")
-        yield Input(id="api_key", password=True)
-        yield Label("能力标记 JSON（留空不修改）")
-        yield Input(id="capabilities")
+        if previous in {p.model_key for p in profiles}:
+            select.value = previous
 
-    def on_mount(self) -> None:
-        try:
-            from agentconf.tui.app import agentconfApp
-
-            assert isinstance(self.app, agentconfApp)
-            providers = self.app.config.list_providers()
-            select = self.query_one("#provider", Select)
-            select.set_options([(p.name, p.name) for p in providers])
-        except AgentsConfigError:
-            pass
+    def on_select_changed(self, event: Select.Changed) -> None:
+        if event.select.id == "model_type" and event.value != Select.NULL:
+            self._refresh_profiles(str(event.value))
 
     def on_confirm(self) -> None:
-        model_name = self.query_one("#model_name", Input).value.strip() or None
-        model_type = self.query_one("#model_type", Select).value
-        provider = self.query_one("#provider", Select).value
-        base_url = self.query_one("#base_url", Input).value.strip() or None
-        api_key = self.query_one("#api_key", Input).value.strip() or None
-        caps_str = self.query_one("#capabilities", Input).value.strip() or None
-
-        has_model_type = model_type != Select.NULL
-        has_provider = provider != Select.NULL
-
-        if not any([model_name, has_model_type, has_provider, base_url, api_key, caps_str]):
-            self._flash_error("至少修改一个字段")
-            return
-
-        kwargs: dict = {}
-        if model_name:
-            kwargs["model_name"] = model_name
-        if has_model_type:
-            kwargs["model_type"] = model_type
-        if has_provider:
-            kwargs["provider_name"] = provider
-        if base_url:
-            kwargs["base_url"] = base_url
-        if api_key:
-            kwargs["api_key"] = api_key
-        if caps_str:
-            try:
-                kwargs["capabilities"] = json.loads(caps_str)
-            except json.JSONDecodeError:
-                self._flash_error("能力标记必须是有效的 JSON")
-                return
-
+        profile = self.query_one("#profile", Select).value
+        values = dict(
+            model_name=self.query_one("#model_name", Input).value.strip(),
+            model_type=self.query_one("#model_type", Select).value,
+            capabilities_key=None if profile == Select.NULL else profile,
+        )
         try:
-            from agentconf.tui.app import agentconfApp
-
-            assert isinstance(self.app, agentconfApp)
-            self.app.config.update_model(self._model_name, **kwargs)
+            if self._editing:
+                self.app.config.update_model(self._editing, **values)
+            else:
+                provider = self.query_one("#provider", Select).value
+                if provider == Select.NULL:
+                    raise ValueError("请选择 Provider")
+                self.app.config.create_model(
+                    provider_name=provider,
+                    name=self.query_one("#name", Input).value.strip(),
+                    **values,
+                )
             self.dismiss(None)
-            self.app.show_toast(f"Model 已更新: {self._model_name}")
-        except AgentsConfigError as e:
-            self._flash_error(str(e))
+            self.app.show_toast("模型绑定已保存")
+        except (AgentsConfigError, ValueError) as exc:
+            self._flash_error(str(exc))
+
+
+class ModelUpdateDialog(ModelCreateDialog):
+    def __init__(self, model_name: str) -> None:
+        super().__init__(model_name)
 
 
 class ModelDetailDialog(DialogScreen):
     def __init__(self, model_name: str) -> None:
         self._model_name = model_name
-        super().__init__(
-            f"Model 详情: {model_name}",
-            confirm_text="关闭",
-            cancel_text="",
-        )
+        super().__init__(f"模型绑定: {model_name}", confirm_text="关闭", cancel_text="")
 
     def compose_body(self) -> ComposeResult:
-        try:
-            from agentconf.tui.app import agentconfApp
-
-            assert isinstance(self.app, agentconfApp)
-            m = self.app.config.get_model(self._model_name)
-            prov = self.app.config.get_provider_by_id(m.provider_id)
-        except AgentsConfigError as e:
-            yield Label(str(e), classes="error-toast")
-            return
-
-        yield Label(f"名称: {m.name}")
-        yield Label(f"Provider: {prov.name if prov else '?'}")
-        yield Label(f"模型标识: {m.model_name}")
-        yield Label(f"类型: {m.model_type}")
-        if m.base_url:
-            yield Label(f"Base URL: {m.base_url}")
-        if m.api_key:
-            yield Label(f"API Key: {m.api_key.get_secret_value()[:8]}...")
-
-        if m.capabilities:
-            yield Label("能力标记:")
-            yield Label(
-                f"  输入模态: {', '.join(mod.value for mod in m.capabilities.input_modalities)}"
-            )
-            if hasattr(m.capabilities, "output_modalities"):
-                yield Label(
-                    f"  输出模态: {', '.join(mod.value for mod in m.capabilities.output_modalities)}"
-                )
-            for field_name, field_val in m.capabilities:
-                if field_name in ("input_modalities", "output_modalities", "extra"):
-                    continue
-                if isinstance(field_val, bool):
-                    mark = "✓" if field_val else "✗"
-                    yield Label(f"  {field_name}: {mark}")
-                elif field_val is not None:
-                    yield Label(f"  {field_name}: {field_val}")
-            if m.capabilities.extra:
-                yield Label(f"  扩展: {json.dumps(m.capabilities.extra, ensure_ascii=False)}")
-
-        yield Label(f"创建时间: {m.created_at}")
-        yield Label(f"更新时间: {m.updated_at}")
+        binding = self.app.config.get_model(self._model_name)
+        resolved = self.app.config.resolve_model(self._model_name)
+        yield Label(
+            json.dumps(binding.model_dump(mode="json"), ensure_ascii=False, indent=2),
+            markup=False,
+        )
+        yield Label(f"连接: {resolved.provider_name} / {resolved.base_url}")
+        yield Label("有效能力（未声明字段按类型补默认值）")
+        yield Label(
+            json.dumps(
+                resolved.capabilities.model_dump(mode="json"),
+                ensure_ascii=False,
+                indent=2,
+            ),
+            markup=False,
+        )
+        yield Label(
+            json.dumps(resolved.capability_sources, ensure_ascii=False, indent=2),
+            markup=False,
+        )
 
 
 class ModelScreen(Container):
@@ -262,7 +174,9 @@ class ModelScreen(Container):
 
     def on_mount(self) -> None:
         table = self.query_one("#model-table", DataTable)
-        table.add_columns("名称", "Provider", "模型标识", "类型", "创建时间")
+        table.add_columns(
+            "名称", "Provider", "模型标识", "类型", "能力档案", "创建时间"
+        )
         self._refresh()
 
     def _refresh(self) -> None:
@@ -289,6 +203,7 @@ class ModelScreen(Container):
                 provider_name,
                 m.model_name,
                 m.model_type,
+                m.capabilities_key or "(默认)",
                 str(m.created_at)[:19],
                 key=m.name,
             )
@@ -340,7 +255,9 @@ class ModelScreen(Container):
         if not name:
             return
 
-        def _do_delete(_) -> None:
+        def _do_delete(accepted) -> None:
+            if not accepted:
+                return
             try:
                 from agentconf.tui.app import agentconfApp
 

@@ -115,10 +115,11 @@ class TestLLMCapabilities:
         assert caps.input_modalities == [Modality.TEXT]
         assert caps.output_modalities == [Modality.TEXT]
         assert caps.supports_streaming is True
-        assert caps.supports_function_calling is False
+        assert caps.supports_function_calling is True
+        assert caps.supports_reasoning is True
         assert caps.supports_vision is False
         assert caps.supports_json_mode is False
-        assert caps.max_context_length is None
+        assert caps.max_context_length == 1_000_000
         assert caps.max_output_length is None
 
     def test_custom_values(self):
@@ -134,10 +135,12 @@ class TestLLMCapabilities:
         assert caps.max_context_length == 128000
 
     def test_from_dict(self):
-        caps = LLMCapabilities.model_validate({
-            "supports_vision": True,
-            "max_context_length": 128000,
-        })
+        caps = LLMCapabilities.model_validate(
+            {
+                "supports_vision": True,
+                "max_context_length": 128000,
+            }
+        )
         assert caps.supports_vision is True
         assert caps.max_context_length == 128000
 
@@ -234,73 +237,32 @@ class TestGetCapabilitiesClass:
 # ─── ModelInstance 测试 ───────────────────────────────
 
 
-class TestModelInstanceCreate:
-    def test_valid_create(self):
-        mc = ModelInstanceCreate(
-            provider_name="openai-main",
-            name="gpt4o",
-            model_name="gpt-4o",
+class TestModelBinding:
+    def test_pure_binding(self):
+        model = ModelInstance(
+            provider_id="p",
+            name="alias",
+            model_name="deployment",
+            capabilities_key="example-VLA",
         )
-        assert mc.model_type == "llm"  # 默认值
-        assert mc.base_url is None
-        assert mc.api_key is None
-        assert mc.capabilities is None
+        assert model.capabilities_key == "example-VLA"
+        assert not hasattr(model, "capabilities")
 
-    def test_with_overrides(self):
-        mc = ModelInstanceCreate(
-            provider_name="openai-main",
-            name="gpt4o-custom",
-            model_name="gpt-4o",
-            base_url="https://custom.api.com/v1",
-            api_key="sk-override",
+    @pytest.mark.parametrize(
+        "field",
+        ["base_url", "api_key", "capabilities", "metadata_provider", "metadata_model"],
+    )
+    def test_rejects_removed_fields(self, field):
+        with pytest.raises(ValueError):
+            ModelInstanceCreate(
+                provider_name="p", name="m", model_name="remote", **{field: None}
+            )
+
+    def test_alias_normalization(self):
+        model = ModelInstanceCreate(
+            provider_name="p", name="m", model_name="remote", model_type="asr"
         )
-        assert mc.base_url == "https://custom.api.com/v1"
-
-    def test_with_model_type(self):
-        mc = ModelInstanceCreate(
-            provider_name="openai-main",
-            name="text-embedding-3",
-            model_name="text-embedding-3-large",
-            model_type="embedding",
-        )
-        assert mc.model_type == "embedding"
-
-    def test_with_capabilities(self):
-        mc = ModelInstanceCreate(
-            provider_name="openai-main",
-            name="gpt4o",
-            model_name="gpt-4o",
-            capabilities=LLMCapabilities(
-                supports_vision=True,
-                max_context_length=128000,
-            ),
-        )
-        assert mc.capabilities is not None
-        assert mc.capabilities.supports_vision is True
-
-
-class TestModelInstance:
-    def test_valid_instance(self):
-        mi = ModelInstance(
-            provider_id="provider-uuid",
-            name="gpt4o",
-            model_name="gpt-4o",
-        )
-        assert mi.model_type == "llm"  # 默认值
-        assert mi.id is not None
-
-    def test_with_capabilities(self):
-        mi = ModelInstance(
-            provider_id="provider-uuid",
-            name="gpt4o",
-            model_name="gpt-4o",
-            model_type="llm",
-            capabilities=LLMCapabilities(
-                supports_vision=True,
-                supports_function_calling=True,
-            ),
-        )
-        assert mi.capabilities.supports_vision is True
+        assert model.model_type == "stt"
 
 
 # ─── Agent 测试 ───────────────────────────────────────

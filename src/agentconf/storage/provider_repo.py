@@ -42,6 +42,7 @@ class ProviderRepository:
             )
             self.conn.commit()
         except sqlite3.IntegrityError:
+            self.conn.rollback()
             raise ProviderAlreadyExistsError(f"Provider '{name}' 已存在")
 
         return self.get_by_name(name)

@@ -54,6 +54,7 @@ class AgentRepository:
             )
             self.conn.commit()
         except sqlite3.IntegrityError:
+            self.conn.rollback()
             raise AgentAlreadyExistsError(f"Agent '{name}' 已存在")
 
         return self.get_by_name(name)

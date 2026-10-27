@@ -116,3 +116,6 @@ class ConfirmDialog(DialogScreen):
     def __init__(self, title: str, message: str) -> None:
         self._message = message
         super().__init__(title, confirm_text="确认删除")
+
+    def on_confirm(self) -> None:
+        self.dismiss(True)

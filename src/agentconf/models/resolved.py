@@ -13,14 +13,16 @@ from agentconf.models.capabilities import Capabilities
 
 
 class ResolvedModelConfig(BaseModel):
-    """Model 配置的最终解析结果，所有继承已处理"""
+    """Provider 连接与能力档案的只读投影。"""
     provider_name: str = Field(..., description="提供商名称")
     provider_type: ProviderType = Field(..., description="提供商类型")
-    base_url: str = Field(..., description="API 基础 URL（已解析覆盖）")
+    base_url: str = Field(..., description="Provider 的 API 基础 URL")
     api_key: str = Field(..., description="API Key（已解密）")
     model_name: str = Field(..., description="模型标识")
     model_type: str = Field(default="llm", description="模型类型")
     capabilities: Capabilities | None = Field(None, description="模型能力标记")
+    capability_sources: dict[str, str] = Field(default_factory=dict, description="各能力字段的来源")
+    capabilities_key: str | None = Field(None, description="显式绑定的能力档案键")
 
 
 class ResolvedAgentConfig(BaseModel):

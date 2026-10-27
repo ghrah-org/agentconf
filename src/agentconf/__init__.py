@@ -1,112 +1,87 @@
-# SPDX-FileCopyrightText: 2026 chenxya <chenxya@ghrah.org>
-#
 # SPDX-License-Identifier: Apache-2.0
+"""多模型配置 SDK；模型绑定显式引用能力档案。"""
 
-"""agentconf - 多Agent LLM配置管理SDK
-
-使用示例::
-
-    from agentconf import AgentsConfig, ProviderType
-    from agentconf.models import LLMCapabilities
-
-    with AgentsConfig() as config:
-        # 创建 Provider
-        provider = config.create_provider(
-            name="openai-main",
-            provider_type="openai",
-            base_url="https://api.openai.com/v1",
-            api_key="sk-xxxxx",
-        )
-
-        # 创建 Model Instance（带能力标记）
-        model = config.create_model(
-            provider_name="openai-main",
-            name="gpt4o",
-            model_name="gpt-4o",
-            model_type="llm",
-            capabilities=LLMCapabilities(
-                supports_vision=True,
-                supports_function_calling=True,
-                max_context_length=128000,
-            ),
-        )
-
-        # 创建 Agent
-        agent = config.create_agent(
-            name="code-reviewer",
-            model_name="gpt4o",
-            temperature=0.3,
-            top_p=0.9,
-        )
-
-        # 解析完整配置
-        resolved = config.resolve_agent("code-reviewer")
-        print(resolved.model_dump())
-"""
-
-__version__ = "0.2.0"
-
+from agentconf.catalog import (
+    CatalogSnapshot,
+    CatalogSource,
+    ImportPlan,
+    ModelsDevSource,
+)
 from agentconf.client import AgentsConfig
+from agentconf.exceptions import (
+    AgentAlreadyExistsError,
+    AgentNotFoundError,
+    AgentsConfigError,
+    CapabilityInUseError,
+    CapabilityNotFoundError,
+    CapabilityTypeMismatchError,
+    CatalogError,
+    CatalogImportError,
+    MigrationError,
+    ModelAlreadyExistsError,
+    ModelNotFoundError,
+    ProviderAlreadyExistsError,
+    ProviderNotFoundError,
+)
 from agentconf.models import (
     Agent,
     AgentCreate,
+    BaseCapabilities,
+    EmbeddingCapabilities,
+    GenericCapabilities,
+    ImageGenCapabilities,
+    LLMCapabilities,
+    Modality,
     ModelInstance,
     ModelInstanceCreate,
     Provider,
     ProviderCreate,
     ProviderType,
-    Modality,
-    BaseCapabilities,
-    LLMCapabilities,
-    EmbeddingCapabilities,
     RerankCapabilities,
-    TTSCapabilities,
-    STTCapabilities,
-    ImageGenCapabilities,
-    GenericCapabilities,
-    ResolvedModelConfig,
     ResolvedAgentConfig,
+    ResolvedModelConfig,
+    STTCapabilities,
+    TTSCapabilities,
 )
-from agentconf.exceptions import (
-    AgentsConfigError,
-    ProviderNotFoundError,
-    ProviderAlreadyExistsError,
-    ModelNotFoundError,
-    ModelAlreadyExistsError,
-    AgentNotFoundError,
-    AgentAlreadyExistsError,
-)
+from agentconf.models.capability_profile import CapabilityProfile
 
+__version__ = "0.2.0"
 __all__ = [
-    # Client
     "AgentsConfig",
-    # Models
-    "ProviderType",
-    "Modality",
-    "Provider",
-    "ProviderCreate",
-    "ModelInstance",
-    "ModelInstanceCreate",
+    "CatalogSnapshot",
+    "CatalogSource",
+    "ImportPlan",
+    "ModelsDevSource",
+    "CapabilityProfile",
     "Agent",
     "AgentCreate",
-    # Capabilities
     "BaseCapabilities",
-    "LLMCapabilities",
     "EmbeddingCapabilities",
-    "RerankCapabilities",
-    "TTSCapabilities",
-    "STTCapabilities",
-    "ImageGenCapabilities",
     "GenericCapabilities",
-    # Resolved
-    "ResolvedModelConfig",
+    "ImageGenCapabilities",
+    "LLMCapabilities",
+    "Modality",
+    "ModelInstance",
+    "ModelInstanceCreate",
+    "Provider",
+    "ProviderCreate",
+    "ProviderType",
+    "RerankCapabilities",
     "ResolvedAgentConfig",
-    # Exceptions
-    "AgentsConfigError",
-    "ProviderNotFoundError",
-    "ProviderAlreadyExistsError",
-    "ModelNotFoundError",
-    "ModelAlreadyExistsError",
-    "AgentNotFoundError",
+    "ResolvedModelConfig",
+    "STTCapabilities",
+    "TTSCapabilities",
     "AgentAlreadyExistsError",
+    "AgentNotFoundError",
+    "AgentsConfigError",
+    "CapabilityInUseError",
+    "CapabilityNotFoundError",
+    "CapabilityTypeMismatchError",
+    "CatalogError",
+    "CatalogImportError",
+    "MigrationError",
+    "ModelAlreadyExistsError",
+    "ModelNotFoundError",
+    "ProviderAlreadyExistsError",
+    "ProviderNotFoundError",
 ]

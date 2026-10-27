@@ -1,6 +1,6 @@
 [project]
 name = "agentconf"
-version = "0.1.0"
+version = "0.2.0"
 description = "A generic multi-model configuration management SDK"
 readme = "README.md"
 authors = [
@@ -33,3 +33,6 @@ dev = [
     "pytest>=8.0",
     "pytest-cov>=6.0",
 ]
+
+[tool.hatch.build.targets.sdist]
+include = ["/src/agentconf", "/tests", "/scripts", "/LICENSES", "/README.md", "/README.en.md", "/pyproject.toml", "/uv.lock"]

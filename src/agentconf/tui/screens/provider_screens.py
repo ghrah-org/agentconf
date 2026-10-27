@@ -248,7 +248,9 @@ class ProviderScreen(Container):
         if not name:
             return
 
-        def _do_delete(_) -> None:
+        def _do_delete(accepted) -> None:
+            if not accepted:
+                return
             try:
                 app = self.app
                 from agentconf.tui.app import agentconfApp

@@ -4,6 +4,7 @@
 
 """Pydantic 数据模型"""
 
+from agentconf.models.capability_profile import CapabilityProfile
 from agentconf.models.base import Modality, ProviderType
 from agentconf.models.capabilities import (
     BaseCapabilities,
@@ -22,6 +23,7 @@ from agentconf.models.agent import Agent, AgentCreate
 from agentconf.models.resolved import ResolvedModelConfig, ResolvedAgentConfig
 
 __all__ = [
+    "CapabilityProfile",
     # 基础类型
     "Modality",
     "ProviderType",

@@ -15,11 +15,6 @@ from agentconf.exceptions import (
     ProviderAlreadyExistsError,
     ProviderNotFoundError,
 )
-from agentconf.models.capabilities import (
-    EmbeddingCapabilities,
-    LLMCapabilities,
-    RerankCapabilities,
-)
 
 
 @pytest.fixture
@@ -73,6 +68,7 @@ def config_with_agent(config_with_model):
 
 # ─── Provider 测试 ───────────────────────────────────
 
+
 class TestProviderCRUD:
     def test_create_provider(self, config):
         provider = config.create_provider(
@@ -121,9 +117,7 @@ class TestProviderCRUD:
         assert updated.base_url == "https://new-api.openai.com/v1"
 
     def test_update_provider_api_key(self, config_with_provider):
-        _updated = config_with_provider.update_provider(
-            "openai", api_key="sk-new-key"
-        )
+        _updated = config_with_provider.update_provider("openai", api_key="sk-new-key")
         # 验证通过解析获取新的 key
         config_with_provider.create_model(
             provider_name="openai", name="test-model", model_name="gpt-4o"
@@ -138,9 +132,7 @@ class TestProviderCRUD:
 
     def test_delete_provider_cascades(self, config_with_model):
         """删除 Provider 应级联删除 Model 和 Agent"""
-        config_with_model.create_agent(
-            name="test-agent", model_name="gpt4o"
-        )
+        config_with_model.create_agent(name="test-agent", model_name="gpt4o")
         config_with_model.delete_provider("openai")
         with pytest.raises(ModelNotFoundError):
             config_with_model.get_model("gpt4o")
@@ -149,6 +141,7 @@ class TestProviderCRUD:
 
 
 # ─── Model Instance 测试 ───────────────────────────────
+
 
 class TestModelCRUD:
     def test_create_model(self, config_with_provider):
@@ -161,16 +154,6 @@ class TestModelCRUD:
         assert model.model_name == "gpt-4o"
         assert model.model_type == "llm"
 
-    def test_create_model_with_overrides(self, config_with_provider):
-        model = config_with_provider.create_model(
-            provider_name="openai",
-            name="gpt4o-custom",
-            model_name="gpt-4o",
-            base_url="https://custom.api.com/v1",
-            api_key="sk-override",
-        )
-        assert model.base_url == "https://custom.api.com/v1"
-
     def test_create_model_with_type(self, config_with_provider):
         model = config_with_provider.create_model(
             provider_name="openai",
@@ -179,33 +162,6 @@ class TestModelCRUD:
             model_type="embedding",
         )
         assert model.model_type == "embedding"
-
-    def test_create_model_with_capabilities(self, config_with_provider):
-        model = config_with_provider.create_model(
-            provider_name="openai",
-            name="gpt4o-vision",
-            model_name="gpt-4o",
-            model_type="llm",
-            capabilities=LLMCapabilities(
-                supports_vision=True,
-                supports_function_calling=True,
-                max_context_length=128000,
-            ),
-        )
-        assert model.capabilities is not None
-        assert model.capabilities.supports_vision is True
-        assert model.capabilities.max_context_length == 128000
-
-    def test_create_model_with_dict_capabilities(self, config_with_provider):
-        """capabilities 可以传入 dict，会自动根据 model_type 反序列化"""
-        model = config_with_provider.create_model(
-            provider_name="openai",
-            name="gpt4o-dict",
-            model_name="gpt-4o",
-            capabilities={"supports_vision": True, "max_context_length": 128000},
-        )
-        assert model.capabilities is not None
-        assert model.capabilities.supports_vision is True
 
     def test_create_duplicate_model(self, config_with_model):
         with pytest.raises(ModelAlreadyExistsError):
@@ -254,7 +210,9 @@ class TestModelCRUD:
             provider_name="openai", name="gpt4o", model_name="gpt-4o", model_type="llm"
         )
         config_with_provider.create_model(
-            provider_name="openai", name="embed-3", model_name="text-embedding-3-large",
+            provider_name="openai",
+            name="embed-3",
+            model_name="text-embedding-3-large",
             model_type="embedding",
         )
         llm_models = config_with_provider.list_models(model_type="llm")
@@ -269,14 +227,6 @@ class TestModelCRUD:
         updated = config_with_model.update_model("gpt4o", model_name="gpt-4o-mini")
         assert updated.model_name == "gpt-4o-mini"
 
-    def test_update_model_capabilities(self, config_with_model):
-        updated = config_with_model.update_model(
-            "gpt4o",
-            capabilities=LLMCapabilities(supports_vision=True),
-        )
-        assert updated.capabilities is not None
-        assert updated.capabilities.supports_vision is True
-
     def test_delete_model(self, config_with_model):
         config_with_model.delete_model("gpt4o")
         with pytest.raises(ModelNotFoundError):
@@ -285,115 +235,15 @@ class TestModelCRUD:
 
 # ─── 能力过滤测试 ──────────────────────────────────────
 
-class TestCapabilityFiltering:
-    def test_find_by_supports_vision(self, config_with_provider):
-        config_with_provider.create_model(
-            provider_name="openai",
-            name="gpt4o",
-            model_name="gpt-4o",
-            capabilities=LLMCapabilities(supports_vision=True),
-        )
-        config_with_provider.create_model(
-            provider_name="openai",
-            name="gpt35",
-            model_name="gpt-3.5-turbo",
-            capabilities=LLMCapabilities(supports_vision=False),
-        )
-        results = config_with_provider.find_models_by_capability("supports_vision")
-        assert len(results) == 1
-        assert results[0].name == "gpt4o"
 
-    def test_find_by_supports_function_calling(self, config_with_provider):
-        config_with_provider.create_model(
-            provider_name="openai",
-            name="gpt4o",
-            model_name="gpt-4o",
-            capabilities=LLMCapabilities(supports_function_calling=True),
-        )
-        results = config_with_provider.find_models_by_capability("supports_function_calling")
-        assert len(results) == 1
-        assert results[0].name == "gpt4o"
-
-    def test_find_by_input_modality(self, config_with_provider):
-        config_with_provider.create_model(
-            provider_name="openai",
-            name="gpt4o",
-            model_name="gpt-4o",
-            capabilities=LLMCapabilities(
-                input_modalities=["text", "image"],
-            ),
-        )
-        results = config_with_provider.find_models_by_capability("input_modality:image")
-        assert len(results) == 1
-        assert results[0].name == "gpt4o"
-
-    def test_find_by_output_modality(self, config_with_provider):
-        config_with_provider.create_model(
-            provider_name="openai",
-            name="tts-1",
-            model_name="tts-1",
-            model_type="tts",
-            capabilities={"output_modalities": ["audio"]},
-        )
-        results = config_with_provider.find_models_by_capability("output_modality:audio")
-        assert len(results) == 1
-        assert results[0].name == "tts-1"
-
-    def test_find_no_match(self, config_with_provider):
-        config_with_provider.create_model(
-            provider_name="openai",
-            name="gpt35",
-            model_name="gpt-3.5-turbo",
-        )
-        results = config_with_provider.find_models_by_capability("supports_vision")
-        assert len(results) == 0
+# ─── LLM 默认能力测试 ──────────────────────────────────
 
 
 # ─── 多模型类型测试 ────────────────────────────────────
 
-class TestMultipleModelTypes:
-    def test_create_embedding_model(self, config_with_provider):
-        model = config_with_provider.create_model(
-            provider_name="openai",
-            name="embed-3",
-            model_name="text-embedding-3-large",
-            model_type="embedding",
-            capabilities=EmbeddingCapabilities(dimensions=1536),
-        )
-        assert model.model_type == "embedding"
-        assert model.capabilities.dimensions == 1536
-
-    def test_create_rerank_model(self, config_with_provider):
-        model = config_with_provider.create_model(
-            provider_name="openai",
-            name="rerank-v1",
-            model_name="rerank-v1",
-            model_type="rerank",
-            capabilities=RerankCapabilities(top_n=5),
-        )
-        assert model.model_type == "rerank"
-        assert model.capabilities.top_n == 5
-
-    def test_list_mixed_types(self, config_with_provider):
-        config_with_provider.create_model(
-            provider_name="openai", name="gpt4o", model_name="gpt-4o", model_type="llm"
-        )
-        config_with_provider.create_model(
-            provider_name="openai", name="embed-3",
-            model_name="text-embedding-3-large", model_type="embedding"
-        )
-        config_with_provider.create_model(
-            provider_name="openai", name="rerank-v1",
-            model_name="rerank-v1", model_type="rerank"
-        )
-        all_models = config_with_provider.list_models()
-        assert len(all_models) == 3
-
-        llm_only = config_with_provider.list_models(model_type="llm")
-        assert len(llm_only) == 1
-
 
 # ─── Agent 测试 ──────────────────────────────────────
+
 
 class TestAgentCRUD:
     def test_create_agent(self, config_with_model):
@@ -434,9 +284,7 @@ class TestAgentCRUD:
         assert len(agents) == 2
 
     def test_update_agent(self, config_with_agent):
-        updated = config_with_agent.update_agent(
-            "reviewer", temperature=0.8, top_k=50
-        )
+        updated = config_with_agent.update_agent("reviewer", temperature=0.8, top_k=50)
         assert updated.temperature == 0.8
         assert updated.top_k == 50
 
@@ -457,6 +305,7 @@ class TestAgentCRUD:
 
 # ─── 配置解析测试 ────────────────────────────────────
 
+
 class TestResolution:
     def test_resolve_model_basic(self, config_with_model):
         resolved = config_with_model.resolve_model("gpt4o")
@@ -466,40 +315,6 @@ class TestResolution:
         assert resolved.api_key == "sk-test-key-123"
         assert resolved.model_name == "gpt-4o"
         assert resolved.model_type == "llm"
-
-    def test_resolve_model_with_capabilities(self, config_with_provider):
-        config_with_provider.create_model(
-            provider_name="openai",
-            name="gpt4o-vision",
-            model_name="gpt-4o",
-            capabilities=LLMCapabilities(supports_vision=True, max_context_length=128000),
-        )
-        resolved = config_with_provider.resolve_model("gpt4o-vision")
-        assert resolved.capabilities is not None
-        assert resolved.capabilities.supports_vision is True
-        assert resolved.capabilities.max_context_length == 128000
-
-    def test_resolve_model_with_base_url_override(self, config_with_provider):
-        config_with_provider.create_model(
-            provider_name="openai",
-            name="custom-url-model",
-            model_name="gpt-4o",
-            base_url="https://proxy.example.com/v1",
-        )
-        resolved = config_with_provider.resolve_model("custom-url-model")
-        assert resolved.base_url == "https://proxy.example.com/v1"
-        assert resolved.api_key == "sk-test-key-123"  # 继承自 Provider
-
-    def test_resolve_model_with_api_key_override(self, config_with_provider):
-        config_with_provider.create_model(
-            provider_name="openai",
-            name="custom-key-model",
-            model_name="gpt-4o",
-            api_key="sk-override-key",
-        )
-        resolved = config_with_provider.resolve_model("custom-key-model")
-        assert resolved.api_key == "sk-override-key"
-        assert resolved.base_url == "https://api.openai.com/v1"  # 继承自 Provider
 
     def test_resolve_agent_full(self, config_with_agent):
         resolved = config_with_agent.resolve_agent("reviewer")
@@ -518,23 +333,9 @@ class TestResolution:
         assert d["model"]["model_name"] == "gpt-4o"
         assert d["temperature"] == 0.3
 
-    def test_resolve_agent_with_model_capabilities(self, config_with_provider):
-        config_with_provider.create_model(
-            provider_name="openai",
-            name="gpt4o-v",
-            model_name="gpt-4o",
-            capabilities=LLMCapabilities(supports_vision=True),
-        )
-        config_with_provider.create_agent(
-            name="vision-agent",
-            model_name="gpt4o-v",
-        )
-        resolved = config_with_provider.resolve_agent("vision-agent")
-        assert resolved.model.capabilities is not None
-        assert resolved.model.capabilities.supports_vision is True
-
 
 # ─── Agent 操作测试（model_name 参数） ──────────────────
+
 
 class TestAgentModelName:
     def test_agent_create_with_model_name(self, config_with_model):
@@ -562,6 +363,7 @@ class TestAgentModelName:
 
 
 # ─── Context Manager 测试 ────────────────────────────
+
 
 class TestContextManager:
     def test_context_manager(self, db_path):

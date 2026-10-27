@@ -42,10 +42,11 @@ class LLMCapabilities(BaseCapabilities):
         description="支持的输出模态",
     )
     supports_streaming: bool = Field(default=True, description="是否支持流式输出")
-    supports_function_calling: bool = Field(default=False, description="是否支持函数调用")
+    supports_function_calling: bool = Field(default=True, description="是否支持函数调用")
+    supports_reasoning: bool = Field(default=True, description="是否支持推理")
     supports_vision: bool = Field(default=False, description="是否支持视觉理解")
     supports_json_mode: bool = Field(default=False, description="是否支持 JSON 模式")
-    max_context_length: int | None = Field(None, description="最大上下文长度（tokens）")
+    max_context_length: int | None = Field(1_000_000, description="最大上下文长度（tokens）")
     max_output_length: int | None = Field(None, description="最大输出长度（tokens）")
 
 

@@ -2,34 +2,34 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""ModelInstance 数据模型 — 统一的模型实例定义"""
+"""模型绑定：连接 Provider 与能力档案，不拥有连接或能力覆盖值。"""
 
-from __future__ import annotations
-
-from pydantic import BaseModel, Field, SecretStr
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from agentconf.models.base import TimestampMixin, generate_uuid
-from agentconf.models.capabilities import Capabilities
+from agentconf.models.capability_profile import normalize_model_type
 
 
 class ModelInstanceCreate(BaseModel):
-    """创建 ModelInstance 的输入模型"""
-    provider_name: str = Field(..., min_length=1, description="关联的 Provider 名称")
-    name: str = Field(..., min_length=1, max_length=255, description="实例名称")
-    model_name: str = Field(..., min_length=1, description="模型标识，如 gpt-4o")
-    model_type: str = Field(default="llm", description="模型类型：llm / embedding / rerank / tts / stt / asr / image_gen 等")
-    base_url: str | None = Field(None, description="覆盖 Provider 的 base_url")
-    api_key: SecretStr | None = Field(None, description="覆盖 Provider 的 api_key")
-    capabilities: Capabilities | None = Field(None, description="模型能力标记")
+    """创建模型绑定的校验入口。"""
+
+    model_config = ConfigDict(extra="forbid")
+    provider_name: str = Field(min_length=1)
+    name: str = Field(min_length=1, max_length=255)
+    model_name: str = Field(min_length=1)
+    model_type: str = "llm"
+    capabilities_key: str | None = None
+    _normalize_type = field_validator("model_type", mode="before")(normalize_model_type)
 
 
 class ModelInstance(TimestampMixin):
-    """ModelInstance 完整模型（数据库映射）"""
-    id: str = Field(default_factory=generate_uuid, description="UUID 主键")
-    provider_id: str = Field(..., description="外键 → Provider.id")
-    name: str = Field(..., min_length=1, max_length=255, description="实例名称")
-    model_name: str = Field(..., min_length=1, description="模型标识")
-    model_type: str = Field(default="llm", description="模型类型")
-    base_url: str | None = Field(None, description="覆盖 Provider 的 base_url")
-    api_key: SecretStr | None = Field(None, description="覆盖 Provider 的 api_key")
-    capabilities: Capabilities | None = Field(None, description="模型能力标记")
+    """数据库中的具名绑定；能力由 resolve_model 单独投影。"""
+
+    model_config = ConfigDict(extra="forbid")
+    id: str = Field(default_factory=generate_uuid)
+    provider_id: str
+    name: str = Field(min_length=1, max_length=255)
+    model_name: str = Field(min_length=1)
+    model_type: str = "llm"
+    capabilities_key: str | None = None
+    _normalize_type = field_validator("model_type", mode="before")(normalize_model_type)

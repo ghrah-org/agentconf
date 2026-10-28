@@ -63,26 +63,26 @@ class agentconfApp(App[None]):
             yield Footer()
             return
         with TabbedContent():
+            for domain, label in (
+                ("provider", "Provider"),
+                ("endpoint", "模型端点"),
+                ("mcp", "MCP"),
+            ):
+                from agentconf.tui.screens.resource_screens import ResourceScreen
+
+                with TabPane(label, id="tab-" + domain):
+                    yield ResourceScreen(domain)
             with TabPane("能力目录", id="tab-catalog"):
                 from agentconf.tui.screens.catalog_screens import CatalogScreen
 
                 yield CatalogScreen()
-            with TabPane("Provider", id="tab-provider"):
-                from agentconf.tui.screens.provider_screens import ProviderScreen
-
-                yield ProviderScreen()
-            with TabPane("Model", id="tab-model"):
-                from agentconf.tui.screens.model_screens import ModelScreen
-
-                yield ModelScreen()
-            with TabPane("Agent", id="tab-agent"):
-                from agentconf.tui.screens.agent_screens import AgentScreen
-
-                yield AgentScreen()
-            with TabPane("Resolve", id="tab-resolve"):
-                from agentconf.tui.screens.resolve_screen import ResolveScreen
-
-                yield ResolveScreen()
+            with TabPane("迁移帮助", id="tab-migration"):
+                yield Label(
+                    "模型与 MCP 独立解析。旧 Agent 组合及请求参数请通过迁移导出后在下游配置。"
+                )
+                yield Label(
+                    "旧库：migrate prepare --formats mappings.json --plan-out plan.json；核对后 migrate apply --plan plan.json。"
+                )
         db_display = self._db_path or AgentsConfig.DEFAULT_DB_PATH
         yield StatusBar(f" 已连接: {db_display}", id="status-bar")
         yield Footer()

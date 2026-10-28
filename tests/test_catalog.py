@@ -3,10 +3,8 @@
 import json
 from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import patch
-
 import pytest
 from pydantic import ValidationError
-
 from agentconf import (
     AgentsConfig,
     CapabilityProfile,
@@ -17,7 +15,7 @@ from agentconf import (
     CatalogImportError,
     ImportPlan,
     LLMCapabilities,
-    ModelAlreadyExistsError,
+    ResourceAlreadyExistsError,
     ModelsDevSource,
 )
 from agentconf.catalog import revision
@@ -59,12 +57,17 @@ def test_offline_seed_once_and_no_fake_connections(tmp_path):
                 "example-rerank",
                 "example-imagegen",
             }
-            assert cfg.list_providers() == cfg.list_models() == cfg.list_agents() == []
+            assert (
+                cfg.list_providers()
+                == cfg.list_model_endpoints()
+                == cfg.list_mcp_servers()
+                == []
+            )
             cfg._db.conn.execute("DELETE FROM model_capabilities")
             cfg._db.conn.commit()
         with AgentsConfig(path) as cfg:
             assert cfg.catalog_list() == []
-            assert cfg._db.conn.execute("PRAGMA user_version").fetchone()[0] == 4
+            assert cfg._db.conn.execute("PRAGMA user_version").fetchone()[0] == 5
 
 
 @pytest.mark.parametrize(
@@ -82,21 +85,28 @@ def test_offline_seed_once_and_no_fake_connections(tmp_path):
 def test_examples_resolve_all_types_without_changing_request_name(
     config, key, typ, field, value
 ):
-    binding = config.create_model(
-        "p", "m", "actual-request-id", model_type=typ, capabilities_key=key
+    binding = config.create_model_endpoint(
+        "p",
+        "m",
+        "actual-request-id",
+        model_type=typ,
+        capabilities_key=key,
+        api_format="openai.chat_completions",
     )
-    config.create_agent("a", "m", max_tokens=100)
-    resolved = config.resolve_agent("a")
-    caps = resolved.model.capabilities
+    resolved = config.resolve_model_endpoint("m")
+    caps = resolved.capabilities
     assert caps.model_dump(mode="json")[field] == value
     assert resolved.model.model_name == binding.model_name == "actual-request-id"
-    assert resolved.model.capabilities_key == key
-    assert resolved.model.capability_sources[field] == "example"
-    assert resolved.max_tokens == 100
+    assert resolved.metadata.model_key == key
+    assert resolved.capability_sources[field] == "example"
+    assert resolved.model.model_name == binding.model_name
     assert not hasattr(binding, "capabilities")
     if typ != "llm":
         assert "max_context_length" not in caps.model_dump()
-        assert config.find_models_by_capability("supports_function_calling") == []
+        assert (
+            config.list_model_endpoints(capability_filter="supports_function_calling")
+            == []
+        )
 
 
 @pytest.mark.parametrize(
@@ -114,10 +124,12 @@ def test_examples_resolve_all_types_without_changing_request_name(
     ],
 )
 def test_unbound_type_defaults_do_not_infer_name(config, typ):
-    config.create_model("p", "m", "example-VLA", model_type=typ)
-    result = config.resolve_model("m")
+    config.create_model_endpoint(
+        "p", "m", "example-VLA", model_type=typ, api_format="openai.chat_completions"
+    )
+    result = config.resolve_model_endpoint("m")
     assert result.capabilities is not None
-    assert result.capabilities_key is None
+    assert result.metadata is None
     assert set(result.capability_sources.values()) == {"default"}
     if typ == "llm":
         assert result.capabilities.max_context_length == 1000000
@@ -131,9 +143,15 @@ def test_unknown_is_not_false_and_effective_values_never_written(config):
         model_key="local/partial", display_name="Partial", supports_reasoning=False
     )
     config.catalog_create(profile)
-    config.create_model("p", "m", "deployment", capabilities_key=profile.model_key)
+    config.create_model_endpoint(
+        "p",
+        "m",
+        "deployment",
+        capabilities_key=profile.model_key,
+        api_format="openai.chat_completions",
+    )
     before = config.catalog_get(profile.model_key)
-    result = config.resolve_model("m")
+    result = config.resolve_model_endpoint("m")
     assert result.capabilities.supports_reasoning is False
     assert result.capabilities.max_context_length == 1000000
     assert result.capability_sources["supports_reasoning"] == "manual"
@@ -187,28 +205,57 @@ def test_invalid_profiles_rejected(values):
 
 
 def test_binding_constraints_clear_rebind_and_cascades(config):
-    config.create_model("p", "m", "deployment", capabilities_key="example-VLA")
-    config.create_agent("a", "m")
+    config.create_model_endpoint(
+        "p",
+        "m",
+        "deployment",
+        capabilities_key="example-VLA",
+        api_format="openai.chat_completions",
+    )
     with pytest.raises(CapabilityInUseError):
         config.catalog_delete(
             "example-VLA", expected_revision=config.catalog_get("example-VLA").revision
         )
     with pytest.raises(CapabilityTypeMismatchError):
-        config.update_model("m", model_type="embedding")
-    assert config.get_model("m").model_type == "llm"
+        config.update_model_endpoint(
+            "m",
+            model_type="embedding",
+            expected_revision=config.get_model_endpoint("m").revision,
+        )
+    assert config.get_model_endpoint("m").model_type == "llm"
     with pytest.raises(CapabilityNotFoundError):
-        config.update_model("m", capabilities_key="missing")
-    config.update_model(
-        "m", model_type="embedding", capabilities_key="example-embedding"
+        config.update_model_endpoint(
+            "m",
+            capabilities_key="missing",
+            expected_revision=config.get_model_endpoint("m").revision,
+        )
+    config.update_model_endpoint(
+        "m",
+        model_type="embedding",
+        capabilities_key="example-embedding",
+        expected_revision=config.get_model_endpoint("m").revision,
     )
-    assert config.resolve_agent("a").model.capabilities.dimensions == 1536
-    config.update_model("m", capabilities_key=None)
-    assert config.resolve_model("m").capabilities.dimensions is None
+    assert config.resolve_model_endpoint("m").capabilities.dimensions == 1536
+    config.update_model_endpoint(
+        "m",
+        capabilities_key=None,
+        expected_revision=config.get_model_endpoint("m").revision,
+    )
+    assert config.resolve_model_endpoint("m").capabilities.dimensions is None
     config.create_provider("p2", "openai", "https://other.invalid", "key2")
-    with pytest.raises(ModelAlreadyExistsError):
-        config.create_model("p2", "m", "other")
-    config.delete_provider("p")
-    assert config.list_agents() == config.list_models() == []
+    with pytest.raises(ResourceAlreadyExistsError):
+        config.create_model_endpoint(
+            "p2", "m", "other", api_format="openai.chat_completions"
+        )
+    from agentconf import ResourceInUseError
+
+    with pytest.raises(ResourceInUseError):
+        config.delete_provider("p", expected_revision=config.get_provider("p").revision)
+    config.delete_model_endpoint(
+        "m", expected_revision=config.get_model_endpoint("m").revision
+    )
+    config.delete_provider("p", expected_revision=config.get_provider("p").revision)
+    assert config.list_model_endpoints() == []
     assert config.catalog_get("example-VLA").max_output_length == 242000
 
 
@@ -225,9 +272,15 @@ def test_binding_constraints_clear_rebind_and_cascades(config):
     ],
 )
 def test_removed_update_fields_are_not_silently_ignored(config, field):
-    config.create_model("p", "m", "remote")
-    with pytest.raises(TypeError):
-        config.update_model("m", **{field: None})
+    config.create_model_endpoint(
+        "p", "m", "remote", api_format="openai.chat_completions"
+    )
+    with pytest.raises(ValueError):
+        config.update_model_endpoint(
+            "m",
+            **{field: None},
+            expected_revision=config.get_model_endpoint("m").revision,
+        )
 
 
 @pytest.mark.parametrize(
@@ -236,7 +289,9 @@ def test_removed_update_fields_are_not_silently_ignored(config, field):
 )
 def test_removed_create_fields_rejected(config, field):
     with pytest.raises(TypeError):
-        config.create_model("p", "m", "remote", **{field: None})
+        config.create_model_endpoint(
+            "p", "m", "remote", **{field: None}, api_format="openai.chat_completions"
+        )
 
 
 def test_effective_filter_all_types_and_reject_unknown(config):
@@ -245,26 +300,50 @@ def test_effective_filter_all_types_and_reject_unknown(config):
         ("tts", "tts", "example-TTS"),
         ("embedding", "embedding", "example-embedding"),
     ]:
-        config.create_model("p", name, name, model_type=typ, capabilities_key=key)
+        config.create_model_endpoint(
+            "p",
+            name,
+            name,
+            model_type=typ,
+            capabilities_key=key,
+            api_format="openai.chat_completions",
+        )
     assert [
-        m.name for m in config.find_models_by_capability("input_modality:image")
+        m.name
+        for m in config.list_model_endpoints(capability_filter="input_modality:image")
     ] == ["llm"]
     assert [
-        m.name for m in config.find_models_by_capability("output_modality:audio")
+        m.name
+        for m in config.list_model_endpoints(capability_filter="output_modality:audio")
     ] == ["tts"]
     assert [
-        m.name for m in config.find_models_by_capability("output_modality:embedding")
+        m.name
+        for m in config.list_model_endpoints(
+            capability_filter="output_modality:embedding"
+        )
     ] == ["embedding"]
     with pytest.raises(ValueError):
-        config.find_models_by_capability("unknown")
+        config.list_model_endpoints(capability_filter="unknown")
     with pytest.raises(ValueError):
-        config.find_models_by_capability("output_modality:invalid")
+        config.list_model_endpoints(capability_filter="output_modality:invalid")
 
 
 def test_manual_edit_reference_impact_revision_and_immutable_type(config):
     old = config.catalog_clone("example-VLA", "local/vla")
-    config.create_model("p", "alias1", "actual-1", capabilities_key=old.model_key)
-    config.create_model("p", "alias2", "actual-2", capabilities_key=old.model_key)
+    config.create_model_endpoint(
+        "p",
+        "alias1",
+        "actual-1",
+        capabilities_key=old.model_key,
+        api_format="openai.chat_completions",
+    )
+    config.create_model_endpoint(
+        "p",
+        "alias2",
+        "actual-2",
+        capabilities_key=old.model_key,
+        api_format="openai.chat_completions",
+    )
     assert config.catalog_references(old.model_key) == ["alias1", "alias2"]
     updated = CapabilityProfile.model_validate(
         {**old.model_dump(), "max_output_length": 120000}
@@ -272,7 +351,9 @@ def test_manual_edit_reference_impact_revision_and_immutable_type(config):
     saved = config.catalog_edit(updated, expected_revision=revision(old))
     assert saved.created_at == old.created_at
     assert saved.updated_at > old.updated_at
-    assert config.resolve_model("alias2").capabilities.max_output_length == 120000
+    assert (
+        config.resolve_model_endpoint("alias2").capabilities.max_output_length == 120000
+    )
     with pytest.raises(CatalogError, match="已被修改"):
         config.catalog_edit(updated, expected_revision=revision(old))
     different_type = CapabilityProfile(
@@ -288,7 +369,7 @@ def test_manual_edit_reference_impact_revision_and_immutable_type(config):
 def test_import_preview_saved_plan_idempotent_no_timestamp_change(config, tmp_path):
     plan = config.catalog_preview(snapshot())
     assert plan.added == ["vendor/new"]
-    assert not any(p.model_key == "vendor/new" for p in config.catalog_list())
+    assert not any((p.model_key == "vendor/new" for p in config.catalog_list()))
     path = tmp_path / "plan.json"
     plan.save(path)
     loaded = ImportPlan.load(path)
@@ -306,7 +387,13 @@ def test_import_preview_saved_plan_idempotent_no_timestamp_change(config, tmp_pa
 def test_import_existing_differences_and_missing_are_retained(config):
     config.catalog_apply(config.catalog_preview(snapshot()))
     original = config.catalog_get("vendor/new")
-    config.create_model("p", "m", "remote-alias", capabilities_key=original.model_key)
+    config.create_model_endpoint(
+        "p",
+        "m",
+        "remote-alias",
+        capabilities_key=original.model_key,
+        api_format="openai.chat_completions",
+    )
     rows = {
         "vendor/new": {
             "id": "vendor/new",
@@ -325,7 +412,7 @@ def test_import_existing_differences_and_missing_are_retained(config):
         config.catalog_apply(plan, ["vendor/new"])
     config.catalog_apply(plan)
     assert config.catalog_get("vendor/new") == original
-    assert config.resolve_model("m").capabilities.max_context_length == 120000
+    assert config.resolve_model_endpoint("m").capabilities.max_context_length == 120000
     missing_plan = config.catalog_preview(
         snapshot({"vendor/other": rows["vendor/other"]})
     )
@@ -442,8 +529,8 @@ def test_two_clients_accept_same_snapshot_and_initialize_safely(tmp_path):
 
     with ThreadPoolExecutor(max_workers=2) as pool:
         results = list(pool.map(apply, range(2)))
-    assert sum(len(r["added"]) for r in results) == 1
-    assert sum(len(r["skipped"]) for r in results) == 1
+    assert sum((len(r["added"]) for r in results)) == 1
+    assert sum((len(r["skipped"]) for r in results)) == 1
 
 
 def test_database_checks_boolean_lengths_and_restrict_references(config):
@@ -457,8 +544,14 @@ def test_database_checks_boolean_lengths_and_restrict_references(config):
         with pytest.raises(sqlite3.IntegrityError):
             with conn:
                 conn.execute(sql)
-    config.create_model("p", "m", "remote", capabilities_key="example-VLA")
+    config.create_model_endpoint(
+        "p",
+        "m",
+        "remote",
+        capabilities_key="example-VLA",
+        api_format="openai.chat_completions",
+    )
     with pytest.raises(sqlite3.IntegrityError):
         with conn:
             conn.execute("DELETE FROM model_capabilities WHERE model_key='example-VLA'")
-    assert config.resolve_model("m").capabilities.max_output_length == 242000
+    assert config.resolve_model_endpoint("m").capabilities.max_output_length == 242000

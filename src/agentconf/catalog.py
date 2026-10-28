@@ -20,7 +20,7 @@ from agentconf.models.capability_profile import (
     CapabilityProfile,
 )
 
-NORMALIZER_VERSION = 3
+NORMALIZER_VERSION = 4
 MODELS_DEV_URL = "https://models.dev/models.json"
 CONTENT_FIELDS = tuple(
     k

@@ -1,6 +1,6 @@
 [project]
 name = "agentconf"
-version = "0.2.0"
+version = "0.3.0a1"
 description = "A generic multi-model configuration management SDK"
 readme = "README.md"
 authors = [

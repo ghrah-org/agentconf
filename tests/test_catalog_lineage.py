@@ -4,9 +4,7 @@ import json
 import sqlite3
 from pathlib import Path
 from unittest.mock import patch
-
 import pytest
-
 from agentconf import (
     AgentsConfig,
     CapabilityProfile,
@@ -82,8 +80,14 @@ def test_derive_clone_raw_values_no_live_inheritance_and_source_labels(cfg):
     saved = cfg.catalog_edit(changed, expected_revision=derived.revision)
     assert saved.revision == derived.revision + 1
     cfg.create_provider("p", "openai", "https://local.invalid", "key")
-    cfg.create_model("p", "alias", "request", capabilities_key=saved.model_key)
-    result = cfg.resolve_model("alias")
+    cfg.create_model_endpoint(
+        "p",
+        "alias",
+        "request",
+        capabilities_key=saved.model_key,
+        api_format="openai.chat_completions",
+    )
+    result = cfg.resolve_model_endpoint("alias")
     assert result.capabilities.max_context_length == 64000
     assert result.capabilities.supports_reasoning is False
     assert result.capability_sources["max_context_length"] == "derived:local/tuned"
@@ -91,7 +95,7 @@ def test_derive_clone_raw_values_no_live_inheritance_and_source_labels(cfg):
     cfg.catalog_update_apply(cfg.catalog_update_preview(snapshot(256000)))
     assert cfg.catalog_stale(saved.model_key)
     assert cfg.catalog_get(saved.model_key) == saved
-    assert cfg.resolve_model("alias").capabilities.max_context_length == 64000
+    assert cfg.resolve_model_endpoint("alias").capabilities.max_context_length == 64000
     rebuilt = cfg.catalog_rebuild(saved.model_key, expected_revision=saved.revision)
     assert rebuilt.declaration() == saved.declaration()
     assert not cfg.catalog_stale(saved.model_key)
@@ -149,7 +153,6 @@ def test_update_conflicts_roll_back_new_entries(cfg, race):
     plan = cfg.catalog_update_preview(next_snapshot)
     conn = cfg._db.conn
     if race == "row":
-        # 即使外部写者没有递增 revision，整行快照仍检测变更。
         conn.execute(
             "UPDATE model_capabilities SET display_name='changed' WHERE model_key='v/m'"
         )
@@ -164,14 +167,20 @@ def test_update_conflicts_roll_back_new_entries(cfg, race):
         conn.commit()
     elif race == "binding":
         cfg.create_provider("p", "openai", "https://local.invalid", "key")
-        cfg.create_model("p", "alias", "request", capabilities_key=old.model_key)
+        cfg.create_model_endpoint(
+            "p",
+            "alias",
+            "request",
+            capabilities_key=old.model_key,
+            api_format="openai.chat_completions",
+        )
     elif race == "variant":
         cfg.catalog_derive(old.model_key, "local/d")
     else:
         cfg.catalog_update_apply(cfg.catalog_update_preview(snapshot(512000)))
     with pytest.raises(CatalogImportError, match="整批回滚"):
         cfg.catalog_update_apply(plan)
-    assert not any(p.model_key == "a/new" for p in cfg.catalog_list())
+    assert not any((p.model_key == "a/new" for p in cfg.catalog_list()))
 
 
 def test_local_conflict_and_atomic_relocation_with_fixed_plan(cfg, tmp_path):
@@ -184,7 +193,13 @@ def test_local_conflict_and_atomic_relocation_with_fixed_plan(cfg, tmp_path):
         )
     )
     cfg.create_provider("p", "openai", "https://local.invalid", "key")
-    cfg.create_model("p", "alias", "request", capabilities_key=old.model_key)
+    cfg.create_model_endpoint(
+        "p",
+        "alias",
+        "request",
+        capabilities_key=old.model_key,
+        api_format="openai.chat_completions",
+    )
     assert cfg.catalog_update_preview(snapshot()).protected == ["v/m"]
     assert "v/m" in cfg.catalog_preview(snapshot()).conflicts
     plan = cfg.catalog_preview(snapshot(), relocations={"v/m": "local/original"})
@@ -198,8 +213,8 @@ def test_local_conflict_and_atomic_relocation_with_fixed_plan(cfg, tmp_path):
         cfg.catalog_apply(plan)
     assert cfg.catalog_get("v/m").origin == "upstream"
     assert cfg.catalog_get("local/original").origin == "local"
-    assert cfg.resolve_model("alias").capabilities.max_context_length == 64000
-    assert cfg.get_model("alias").capabilities_key == "local/original"
+    assert cfg.resolve_model_endpoint("alias").capabilities.max_context_length == 64000
+    assert cfg.get_model_endpoint("alias").capabilities_key == "local/original"
     assert cfg.catalog_apply(plan)["skipped"] == ["v/m"]
     assert cfg._db.conn.execute("PRAGMA foreign_key_check").fetchall() == []
 
@@ -216,12 +231,18 @@ def test_relocation_race_and_fk_failure_roll_back(cfg):
     with pytest.raises(CatalogImportError):
         cfg.catalog_apply(plan)
     assert cfg.catalog_get("v/m").origin == "local"
-    assert not any(p.model_key == "local/keep" for p in cfg.catalog_list())
+    assert not any((p.model_key == "local/keep" for p in cfg.catalog_list()))
     cfg.create_provider("p", "openai", "https://local.invalid", "key")
-    cfg.create_model("p", "alias", "request", capabilities_key="v/m")
+    cfg.create_model_endpoint(
+        "p",
+        "alias",
+        "request",
+        capabilities_key="v/m",
+        api_format="openai.chat_completions",
+    )
     current = cfg.catalog_get("v/m")
     cfg.catalog_relocate("v/m", "local/keep", expected_revision=current.revision)
-    assert cfg.get_model("alias").capabilities_key == "local/keep"
+    assert cfg.get_model_endpoint("alias").capabilities_key == "local/keep"
     with pytest.raises(CapabilityInUseError):
         cfg.catalog_delete("local/keep", expected_revision=current.revision + 1)
     with pytest.raises(CatalogConflictError):
@@ -277,14 +298,14 @@ def test_readonly_prepare_explicit_migration_preserves_originals_and_json(
     with pytest.raises(MigrationRequiredError):
         AgentsConfig(path)
     plan = prepare_migration(path)
-    assert path.read_bytes() == before and not list(tmp_path.glob("*.backup-*"))
+    assert path.read_bytes() == before and (not list(tmp_path.glob("*.backup-*")))
     planfile = tmp_path / "migration.json"
     plan.save(planfile)
     report = apply_migration(MigrationPlan.load(planfile))
     backup = Path(report["backup_path"])
-    assert backup.stat().st_mode & 0o777 == 0o600
+    assert backup.stat().st_mode & 511 == 384
     with AgentsConfig(path) as config:
-        assert len(config.catalog_list()) == 3  # 没有重新灌 seed
+        assert len(config.catalog_list()) == 3
         assert config.catalog_get("v/m").origin == (
             "upstream" if version == 3 else "local"
         )
@@ -298,8 +319,7 @@ def test_readonly_prepare_explicit_migration_preserves_originals_and_json(
         assert config._db.conn.execute("PRAGMA foreign_key_check").fetchall() == []
     with sqlite3.connect(backup) as conn:
         assert conn.execute("PRAGMA user_version").fetchone()[0] == version
-    with pytest.raises(MigrationError, match="已变化"):
-        apply_migration(plan)
+    assert apply_migration(plan)["already_applied"]
 
 
 def test_migration_changed_since_prepare_and_failure_roll_back(tmp_path):
@@ -361,13 +381,20 @@ def test_schema4_fixture_and_backup_failure_are_safe(tmp_path):
         conn.executescript(
             (Path(__file__).parent / "fixtures/schema_v4.sql").read_text()
         )
+    apply_migration(prepare_migration(path))
     with AgentsConfig(path) as config:
         assert config.catalog_list() == []
     old = tmp_path / "v3.db"
     old_catalog(old)
     plan = prepare_migration(old)
     before = old.read_bytes()
-    with patch.object(Database, "_backup", side_effect=OSError("disk full")):
+    with patch.object(
+        __import__(
+            "agentconf.storage.legacy", fromlist=["LegacyDatabase"]
+        ).LegacyDatabase,
+        "_backup",
+        side_effect=OSError("disk full"),
+    ):
         with pytest.raises(OSError, match="disk full"):
             apply_migration(plan)
     assert old.read_bytes() == before
@@ -398,15 +425,29 @@ def test_recreated_same_name_binding_invalidates_frozen_plan(cfg, relocate):
     else:
         upstream(cfg)
     cfg.create_provider("p", "openai", "https://local.invalid", "key")
-    cfg.create_model("p", "same-alias", "request", capabilities_key="v/m")
+    cfg.create_model_endpoint(
+        "p",
+        "same-alias",
+        "request",
+        capabilities_key="v/m",
+        api_format="openai.chat_completions",
+    )
     plan = (
         cfg.catalog_preview(snapshot(), relocations={"v/m": "local/keep"})
         if relocate
         else cfg.catalog_update_preview(snapshot(256000))
     )
-    cfg.delete_model("same-alias")
-    cfg.create_model("p", "same-alias", "request", capabilities_key="v/m")
+    cfg.delete_model_endpoint(
+        "same-alias", expected_revision=cfg.get_model_endpoint("same-alias").revision
+    )
+    cfg.create_model_endpoint(
+        "p",
+        "same-alias",
+        "request",
+        capabilities_key="v/m",
+        api_format="openai.chat_completions",
+    )
     assert cfg.catalog_references("v/m") == ["same-alias"]
     with pytest.raises(CatalogImportError, match="整批回滚"):
         (cfg.catalog_apply if relocate else cfg.catalog_update_apply)(plan)
-    assert cfg.get_model("same-alias").capabilities_key == "v/m"
+    assert cfg.get_model_endpoint("same-alias").capabilities_key == "v/m"

@@ -4,14 +4,8 @@ import json
 import sqlite3
 from pathlib import Path
 from unittest.mock import patch
-
 import pytest
-
-from agentconf import (
-    AgentsConfig,
-    ModelsDevSource,
-    UpdatePlan,
-)
+from agentconf import AgentsConfig, ModelsDevSource, UpdatePlan
 
 
 @pytest.fixture
@@ -43,7 +37,13 @@ def imported(cfg):
 def test_update_fixed_snapshot_and_repeated_apply_preserve_timestamps(cfg, tmp_path):
     old = imported(cfg)
     cfg.create_provider("p", "openai", "https://local.invalid", "key")
-    cfg.create_model("p", "alias", "real-request", capabilities_key=old.model_key)
+    cfg.create_model_endpoint(
+        "p",
+        "alias",
+        "real-request",
+        capabilities_key=old.model_key,
+        api_format="openai.chat_completions",
+    )
     plan = cfg.catalog_update_preview(snapshot(256000))
     assert plan.operation == "update" and plan.updatable == [old.model_key]
     assert plan.references[old.model_key] == ["alias"]
@@ -62,8 +62,8 @@ def test_update_fixed_snapshot_and_repeated_apply_preserve_timestamps(cfg, tmp_p
     assert result["updated"] == [old.model_key]
     changed = cfg.catalog_get(old.model_key)
     assert changed.created_at == old.created_at and changed.updated_at > old.updated_at
-    assert cfg.resolve_model("alias").capabilities.max_context_length == 256000
-    assert cfg.resolve_model("alias").model_name == "real-request"
+    assert cfg.resolve_model_endpoint("alias").capabilities.max_context_length == 256000
+    assert cfg.resolve_model_endpoint("alias").model.model_name == "real-request"
     assert cfg.catalog_update_apply(loaded)["skipped"] == [old.model_key]
     assert cfg.catalog_get(old.model_key) == changed
     assert cfg.catalog_update_preview(snapshot(256000)).unchanged == [old.model_key]
@@ -72,7 +72,7 @@ def test_update_fixed_snapshot_and_repeated_apply_preserve_timestamps(cfg, tmp_p
 def test_type_conflict_and_missing_rows_never_change_bound_record(cfg):
     old = imported(cfg)
     plan = cfg.catalog_update_preview(snapshot(256000, model_type="embedding"))
-    assert "vendor/m" in plan.conflicts and not plan.updatable
+    assert "vendor/m" in plan.conflicts and (not plan.updatable)
     assert not cfg.catalog_update_apply(plan)["updated"]
     assert cfg.catalog_get(old.model_key) == old
     other = ModelsDevSource.parse(

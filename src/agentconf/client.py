@@ -1,31 +1,28 @@
 # SPDX-License-Identifier: Apache-2.0
-"""配置 SDK：Provider 连接、能力档案、模型绑定与 Agent 采样参数。"""
+"""具名模型端点、能力目录及独立 MCP 的配置 SDK。"""
 
 from __future__ import annotations
-
+from contextlib import contextmanager
 from pathlib import Path
-
 from agentconf.catalog import (
     CatalogSnapshot,
     CatalogSource,
     ImportPlan,
     UpdatePlan,
-    prepare_update,
     ModelsDevSource,
     prepare_import,
+    prepare_update,
 )
 from agentconf.models import (
-    Agent,
-    AgentCreate,
-    ModelInstance,
-    ModelInstanceCreate,
     Provider,
-    ProviderCreate,
-    ProviderType,
-    ResolvedAgentConfig,
-    ResolvedModelConfig,
+    ModelEndpoint,
+    MCPServer,
+    ModelConnection,
+    ModelInfo,
+    ResolvedMetadata,
+    ResolvedModelEndpoint,
+    ResolvedMCPServer,
 )
-from agentconf.models.base import generate_uuid
 from agentconf.models.capability_profile import (
     CapabilityProfile,
     build_capabilities,
@@ -33,19 +30,15 @@ from agentconf.models.capability_profile import (
     normalize_model_type,
     validate_capability_filter,
 )
-from agentconf.storage import (
-    AgentRepository,
-    Database,
-    ModelRepository,
-    ProviderRepository,
-)
+from agentconf.drivers import sdk_hint
+from agentconf.storage.database import Database
+from agentconf.storage.resources import ResourceRepository
 from agentconf.storage.catalog_repo import CatalogRepository
-
-
-def _check_fields(values: dict, allowed: set[str]) -> None:
-    invalid = set(values) - allowed
-    if invalid:
-        raise TypeError(f"不支持的配置字段: {', '.join(sorted(invalid))}")
+from agentconf.exceptions import (
+    LegacyAPIError,
+    EndpointNotFoundError,
+    MCPServerNotFoundError,
+)
 
 
 class AgentsConfig:
@@ -53,12 +46,26 @@ class AgentsConfig:
 
     DEFAULT_DB_PATH = "~/.agentconf/config.db"
 
-    def __init__(self, db_path: str | Path | None = None) -> None:
+    def __init__(
+        self, db_path: str | Path | None = None, *, read_only: bool = False
+    ) -> None:
         self._db = Database(db_path or self.DEFAULT_DB_PATH)
-        conn = self._db.conn
-        self._provider_repo = ProviderRepository(conn)
-        self._model_repo = ModelRepository(conn)
-        self._agent_repo = AgentRepository(conn)
+        if read_only:
+            import sqlite3
+
+            conn = sqlite3.connect(self._db.db_path.as_uri() + "?mode=ro", uri=True)
+            conn.row_factory = sqlite3.Row
+            self._db._connection = conn
+            try:
+                self._db._preflight()
+            except BaseException:
+                self._db.close()
+                raise
+        else:
+            conn = self._db.conn
+        self._provider_repo = ResourceRepository(conn, "providers")
+        self._endpoint_repo = ResourceRepository(conn, "model_endpoints")
+        self._mcp_repo = ResourceRepository(conn, "mcp_servers")
         self._catalog_repo = CatalogRepository(conn)
 
     def close(self) -> None:
@@ -223,188 +230,280 @@ class AgentsConfig:
         return self._catalog_repo.set_management(*args, **kwargs)
 
     def create_provider(
-        self, name: str, provider_type: ProviderType | str, base_url: str, api_key: str
-    ) -> Provider:
-        data = ProviderCreate(
-            name=name, provider_type=provider_type, base_url=base_url, api_key=api_key
-        )
+        self,
+        name: str,
+        provider_type: str,
+        base_url,
+        api_key=None,
+        *,
+        connection_options=None,
+    ):
         return self._provider_repo.create(
-            id=generate_uuid(),
-            name=data.name,
-            provider_type=data.provider_type.value,
-            base_url=data.base_url,
-            api_key=data.api_key.get_secret_value(),
+            dict(
+                name=name,
+                provider_type=provider_type,
+                base_url=base_url,
+                api_key=api_key,
+                connection_options={}
+                if connection_options is None
+                else connection_options,
+            )
         )
 
     def get_provider(self, name: str) -> Provider:
-        return self._provider_repo.get_by_name(name)
+        return self._provider_repo.get(name)
 
     def get_provider_by_id(self, provider_id: str) -> Provider:
         return self._provider_repo.get_by_id(provider_id)
 
     def list_providers(self) -> list[Provider]:
-        return self._provider_repo.list_all()
+        return self._provider_repo.list()
 
-    def update_provider(self, name: str, **kwargs) -> Provider:
-        _check_fields(kwargs, {"provider_type", "base_url", "api_key"})
-        old = self.get_provider(name).model_dump()
-        old.update(kwargs)
-        data = ProviderCreate.model_validate(old)
-        values = data.model_dump(mode="python")
-        values["api_key"] = data.api_key.get_secret_value()
-        values["provider_type"] = data.provider_type.value
-        return self._provider_repo.update(name, **{k: values[k] for k in kwargs})
-
-    def delete_provider(self, name: str) -> None:
-        self._provider_repo.delete(name)
-
-    def create_model(
+    def update_provider(
         self,
-        provider_name: str,
-        name: str,
-        model_name: str,
-        model_type: str = "llm",
-        capabilities_key: str | None = None,
-    ) -> ModelInstance:
-        data = ModelInstanceCreate(
-            provider_name=provider_name,
-            name=name,
-            model_name=model_name,
-            model_type=model_type,
-            capabilities_key=capabilities_key,
-        )
-        provider = self.get_provider(data.provider_name)
-        return self._model_repo.create(
-            id=generate_uuid(),
-            provider_id=provider.id,
-            **data.model_dump(exclude={"provider_name"}),
+        provider_name,
+        *,
+        expected_revision: int,
+        expected_id: str | None = None,
+        **changes,
+    ):
+        return self._provider_repo.update(
+            provider_name, changes, expected_revision, expected_id
         )
 
-    def get_model(self, name: str) -> ModelInstance:
-        return self._model_repo.get_by_name(name)
+    def delete_provider(
+        self, name, *, expected_revision: int, expected_id: str | None = None
+    ):
+        return self._provider_repo.delete(name, expected_revision, expected_id)
 
-    def get_model_by_id(self, model_id: str) -> ModelInstance:
-        return self._model_repo.get_by_id(model_id)
+    def provider_references(self, name: str) -> list[str]:
+        return self._provider_repo.provider_references(self.get_provider(name).id)
 
-    def list_models(
-        self, provider_name: str | None = None, model_type: str | None = None
-    ) -> list[ModelInstance]:
-        models = (
-            self._model_repo.list_by_provider(self.get_provider(provider_name).id)
-            if provider_name
-            else self._model_repo.list_all()
-        )
-        return (
-            [m for m in models if m.model_type == normalize_model_type(model_type)]
-            if model_type
-            else models
-        )
-
-    def find_models_by_capability(self, capability_filter: str) -> list[ModelInstance]:
-        validate_capability_filter(capability_filter)
-        return [
-            m
-            for m in self.list_models()
-            if matches_capability(
-                self.resolve_model(m.name).capabilities, capability_filter
+    def create_model_endpoint(
+        self,
+        provider_name,
+        name,
+        model_name,
+        api_format,
+        *,
+        model_type="llm",
+        capabilities_key=None,
+    ):
+        return self._endpoint_repo.create(
+            dict(
+                provider_name=provider_name,
+                name=name,
+                model_name=model_name,
+                api_format=api_format,
+                model_type=model_type,
+                capabilities_key=capabilities_key,
             )
+        )
+
+    def get_model_endpoint(self, name: str) -> ModelEndpoint:
+        return self._endpoint_repo.get(name)
+
+    def get_model_endpoint_by_id(self, endpoint_id: str) -> ModelEndpoint:
+        return self._endpoint_repo.get_by_id(endpoint_id)
+
+    def list_model_endpoints(
+        self,
+        *,
+        provider_name=None,
+        model_type=None,
+        api_format=None,
+        capability_filter=None,
+    ):
+        if capability_filter:
+            validate_capability_filter(capability_filter)
+        with self._snapshot():
+            provider = self.get_provider(provider_name).id if provider_name else None
+            endpoints = self._endpoint_repo.list()
+            return [
+                e
+                for e in endpoints
+                if (not provider or e.provider_id == provider)
+                and (not model_type or e.model_type == normalize_model_type(model_type))
+                and (not api_format or e.api_format == api_format)
+                and (
+                    not capability_filter
+                    or matches_capability(
+                        self._resolve_model(e.name).capabilities, capability_filter
+                    )
+                )
+            ]
+
+    def update_model_endpoint(
+        self,
+        endpoint_name,
+        *,
+        expected_revision: int,
+        expected_id: str | None = None,
+        **changes,
+    ):
+        return self._endpoint_repo.update(
+            endpoint_name, changes, expected_revision, expected_id
+        )
+
+    def delete_model_endpoint(
+        self, name, *, expected_revision: int, expected_id: str | None = None
+    ):
+        return self._endpoint_repo.delete(name, expected_revision, expected_id)
+
+    def create_mcp_server(self, name, transport, settings):
+        return self._mcp_repo.create(
+            dict(name=name, transport=transport, settings=settings)
+        )
+
+    def get_mcp_server(self, name: str) -> MCPServer:
+        return self._mcp_repo.get(name)
+
+    def get_mcp_server_by_id(self, server_id: str) -> MCPServer:
+        return self._mcp_repo.get_by_id(server_id)
+
+    def list_mcp_servers(self, *, transport=None):
+        return [
+            s
+            for s in self._mcp_repo.list()
+            if transport is None or s.transport == transport
         ]
 
-    def update_model(self, name: str, **kwargs) -> ModelInstance:
-        return self._model_repo.update(name, **kwargs)
-
-    def delete_model(self, name: str) -> None:
-        self._model_repo.delete(name)
-
-    def create_agent(
+    def update_mcp_server(
         self,
-        name: str,
-        model_name: str,
-        temperature: float | None = None,
-        top_p: float | None = None,
-        top_k: int | None = None,
-        max_tokens: int | None = None,
-        extra_params: dict | None = None,
-    ) -> Agent:
-        data = AgentCreate(
-            name=name,
-            model_name=model_name,
-            temperature=temperature,
-            top_p=top_p,
-            top_k=top_k,
-            max_tokens=max_tokens,
-            extra_params=extra_params,
-        )
-        model = self.get_model(model_name)
-        return self._agent_repo.create(
-            id=generate_uuid(),
-            model_instance_id=model.id,
-            **data.model_dump(exclude={"model_name"}),
+        server_name,
+        *,
+        expected_revision: int,
+        expected_id: str | None = None,
+        **changes,
+    ):
+        return self._mcp_repo.update(
+            server_name, changes, expected_revision, expected_id
         )
 
-    def get_agent(self, name: str) -> Agent:
-        return self._agent_repo.get_by_name(name)
+    def delete_mcp_server(
+        self, name, *, expected_revision: int, expected_id: str | None = None
+    ):
+        return self._mcp_repo.delete(name, expected_revision, expected_id)
 
-    def get_agent_by_id(self, agent_id: str) -> Agent:
-        return self._agent_repo.get_by_id(agent_id)
+    @contextmanager
+    def _snapshot(self):
+        self._db.conn.execute("BEGIN")
+        try:
+            yield
+        finally:
+            self._db.conn.rollback()
 
-    def list_agents(self) -> list[Agent]:
-        return self._agent_repo.list_all()
-
-    def update_agent(self, name: str, **kwargs) -> Agent:
-        _check_fields(
-            kwargs,
-            {
-                "model_name",
-                "temperature",
-                "top_p",
-                "top_k",
-                "max_tokens",
-                "extra_params",
-            },
-        )
-        old = self.get_agent(name)
-        values = old.model_dump(
-            exclude={"id", "model_instance_id", "created_at", "updated_at"}
-        )
-        values["model_name"] = self.get_model_by_id(old.model_instance_id).name
-        values.update(kwargs)
-        AgentCreate.model_validate(values)
-        if "model_name" in kwargs:
-            kwargs["model_instance_id"] = self.get_model(kwargs.pop("model_name")).id
-        return self._agent_repo.update(name, **kwargs)
-
-    def delete_agent(self, name: str) -> None:
-        self._agent_repo.delete(name)
-
-    def resolve_model(self, name: str) -> ResolvedModelConfig:
-        binding = self.get_model(name)
-        provider = self.get_provider_by_id(binding.provider_id)
+    def _resolve_model(self, name):
+        endpoint = self.get_model_endpoint(name)
+        provider = self.get_provider_by_id(endpoint.provider_id)
         profile = (
-            self.catalog_get(binding.capabilities_key)
-            if binding.capabilities_key is not None
+            self.catalog_get(endpoint.capabilities_key)
+            if endpoint.capabilities_key
             else None
         )
-        capabilities, sources = build_capabilities(binding.model_type, profile)
-        return ResolvedModelConfig(
-            provider_name=provider.name,
-            provider_type=provider.provider_type,
-            base_url=provider.base_url,
-            api_key=provider.api_key.get_secret_value(),
-            model_name=binding.model_name,
-            model_type=binding.model_type,
-            capabilities_key=binding.capabilities_key,
+        capabilities, sources = build_capabilities(endpoint.model_type, profile)
+        metadata = None
+        if profile:
+            metadata = ResolvedMetadata(
+                model_key=profile.model_key,
+                origin=profile.origin,
+                source=profile.source,
+                revision=profile.revision,
+                derived_from=profile.derived_from,
+                base_fingerprint=profile.base_fingerprint,
+                stale=self.catalog_stale(profile.model_key)
+                if profile.origin == "derived"
+                else False,
+            )
+        return ResolvedModelEndpoint(
+            endpoint_id=endpoint.id,
+            name=endpoint.name,
+            revision=endpoint.revision,
+            connection=ModelConnection(
+                provider_id=provider.id,
+                provider_name=provider.name,
+                provider_revision=provider.revision,
+                provider_type=provider.provider_type,
+                api_format=endpoint.api_format,
+                base_url=provider.base_url,
+                api_key=provider.api_key,
+                connection_options=provider.connection_options,
+                sdk_hint=sdk_hint(endpoint.api_format),
+            ),
+            model=ModelInfo(
+                model_name=endpoint.model_name, model_type=endpoint.model_type
+            ),
+            metadata=metadata,
             capabilities=capabilities,
             capability_sources=sources,
         )
 
-    def resolve_agent(self, name: str) -> ResolvedAgentConfig:
-        agent = self.get_agent(name)
-        model = self.get_model_by_id(agent.model_instance_id)
-        return ResolvedAgentConfig(
-            agent_name=agent.name,
-            model=self.resolve_model(model.name),
-            **agent.model_dump(
-                exclude={"id", "name", "model_instance_id", "created_at", "updated_at"}
-            ),
+    def resolve_model_endpoint(self, name: str) -> ResolvedModelEndpoint:
+        with self._snapshot():
+            return self._resolve_model(name)
+
+    def _resolve_mcp(self, name):
+        server = self.get_mcp_server(name)
+        return ResolvedMCPServer(
+            server_id=server.id,
+            name=server.name,
+            revision=server.revision,
+            transport=server.transport,
+            connection=server.settings,
         )
+
+    def resolve_mcp_server(self, name: str) -> ResolvedMCPServer:
+        with self._snapshot():
+            return self._resolve_mcp(name)
+
+    def _resolve_many(self, names, resolver, missing_type):
+        if isinstance(names, (str, bytes)):
+            raise ValueError("批量解析需要名称列表，不接受单个字符串")
+        result, missing = {}, []
+        with self._snapshot():
+            for name in names:
+                try:
+                    result[name] = resolver(name)
+                except missing_type:
+                    missing.append(name)
+            if missing:
+                raise missing_type("资源未找到: " + ", ".join(missing))
+        return result
+
+    def resolve_model_endpoints(
+        self, names: list[str]
+    ) -> dict[str, ResolvedModelEndpoint]:
+        return self._resolve_many(names, self._resolve_model, EndpointNotFoundError)
+
+    def resolve_mcp_servers(self, names: list[str]) -> dict[str, ResolvedMCPServer]:
+        return self._resolve_many(names, self._resolve_mcp, MCPServerNotFoundError)
+
+    def __getattr__(self, name):
+        old_models = {
+            "create_model",
+            "get_model",
+            "get_model_by_id",
+            "list_models",
+            "update_model",
+            "delete_model",
+            "resolve_model",
+            "find_models_by_capability",
+        }
+        old_agents = {
+            "create_agent",
+            "get_agent",
+            "get_agent_by_id",
+            "list_agents",
+            "update_agent",
+            "delete_agent",
+            "resolve_agent",
+        }
+        if name in old_models | old_agents:
+
+            def removed(*args, **kwargs):
+                raise LegacyAPIError(
+                    "旧模型/Agent 聚合 API 已移除；使用 model_endpoint 系列 API，在下游组合 Agent 和请求参数，并通过 migrate prepare/apply 导出旧配置"
+                )
+
+            return removed
+        raise AttributeError(name)

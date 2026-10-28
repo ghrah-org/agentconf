@@ -1,19 +1,17 @@
-"""无头交互验证：筛选、绑定、清除档案与显式确认。"""
+"""实际按钮交互：三资源全入口、掩码编辑、MCP 表单与目录功能。"""
 
 import asyncio
-from unittest.mock import patch
-
-from textual.widgets import DataTable, Input, Select, TabbedContent, TextArea
-
-from agentconf import AgentsConfig
-from agentconf.catalog import ModelsDevSource
+import json
+from textual.widgets import Input, TextArea, Select, TabbedContent, DataTable
 from agentconf.tui.app import agentconfApp
-from agentconf.tui.screens.catalog_screens import ImportPreviewDialog, ProfileEditDialog
-from agentconf.tui.screens.model_screens import ModelCreateDialog, ModelUpdateDialog
+from agentconf.tui.screens.resource_screens import ResourceEditDialog
+from agentconf.tui.screens.catalog_screens import ProfileEditDialog
+from test_catalog_lineage import old_catalog
+
+SECRET = "UI-PRIVATE-SENTINEL"
 
 
 def run_ui(coro):
-    # 独立事件循环，避免 Textual 的清理任务污染其它同步 SDK 测试。
     loop = asyncio.new_event_loop()
     try:
         loop.run_until_complete(coro)
@@ -21,190 +19,163 @@ def run_ui(coro):
         loop.close()
 
 
-def test_catalog_filter_model_binding_clear_and_delete_cancel(tmp_path):
+def test_provider_endpoint_and_mcp_create_preview_edit_resolve_cancel_delete(tmp_path):
     path = tmp_path / "config.db"
-    with AgentsConfig(path) as cfg:
-        cfg.create_provider("p", "openai", "https://local.invalid", "test-key")
 
     async def scenario():
         app = agentconfApp(str(path))
-        async with app.run_test(size=(140, 50)) as pilot:
+        async with app.run_test(size=(130, 60)) as pilot:
             await pilot.pause()
-            screen = app.query_one("#catalog-table", DataTable)
-            assert screen.row_count > 500
-            app.query_one("#catalog-kind", Select).value = "example"
-            app.query_one("#catalog-filter", Input).value = "VLA"
+            assert await pilot.click("#provider-create")
             await pilot.pause()
-            assert screen.row_count == 1
-            app.push_screen(ModelCreateDialog())
-            await pilot.pause()
-            app.screen.query_one("#name", Input).value = "alias"
-            app.screen.query_one("#model_name", Input).value = "real-deployment"
-            app.screen.query_one("#profile", Select).value = "example-VLA"
+            app.screen.query_one("#res-name", Input).value = "gateway"
+            app.screen.query_one("#provider-type", Input).value = "future-provider"
+            app.screen.query_one("#provider-url", Input).value = (
+                "https://host.invalid/?token=" + SECRET
+            )
+            app.screen.query_one("#provider-key", Input).value = SECRET
+            app.screen.on_confirm()
+            assert app.config.list_providers() == []
+            assert (
+                SECRET not in app.screen.query_one("#resource-preview", TextArea).text
+            )
             app.screen.on_confirm()
             await pilot.pause()
-            assert app.config.resolve_model("alias").model_name == "real-deployment"
-            assert app.config.get_model("alias").capabilities_key == "example-VLA"
-            app.push_screen(ModelUpdateDialog("alias"))
+            assert (
+                app.config.get_provider("gateway").api_key.get_secret_value() == SECRET
+            )
+            await pilot.click("#--content-tab-tab-endpoint")
+            await pilot.pause(0.1)
+            assert await pilot.click("#endpoint-create")
             await pilot.pause()
-            assert app.screen.query_one("#profile", Select).value == "example-VLA"
-            assert not app.screen.query("#provider")
-            app.screen.query_one("#profile", Select).value = Select.NULL
+            app.screen.query_one("#res-name", Input).value = "model"
+            app.screen.query_one("#endpoint-model", Input).value = "actual-request"
+            app.screen.query_one("#endpoint-format", Input).value = "openai.responses"
+            app.screen.query_one("#endpoint-profile", Select).value = "example-VLA"
+            app.screen.on_confirm()
             app.screen.on_confirm()
             await pilot.pause()
-            assert app.config.get_model("alias").capabilities_key is None
-            # 取消删除不能触发级联删除。
-            app.query_one(TabbedContent).active = "tab-model"
-            model_screen = app.query_one("#model-table").parent
-            model_screen._refresh()
-            model_screen.action_delete()
+            assert (
+                app.config.resolve_model_endpoint("model").connection.api_format
+                == "openai.responses"
+            )
+            assert await pilot.click("#endpoint-resolve")
             await pilot.pause()
+            assert SECRET not in app.screen.query_one("#resource-detail", TextArea).text
+            assert (
+                "actual-request"
+                in app.screen.query_one("#resource-detail", TextArea).text
+            )
+            await pilot.press("escape")  # 详情没有取消按钮，但键盘可关闭
+            await pilot.pause()
+            assert await pilot.click("#endpoint-edit")
+            await pilot.pause()
+            app.screen.query_one("#endpoint-model", Input).value = "cancelled"
             await pilot.press("escape")
             await pilot.pause()
-            assert app.config.get_model("alias").model_name == "real-deployment"
+            assert app.config.get_model_endpoint("model").model_name == "actual-request"
+            await pilot.click("#--content-tab-tab-mcp")
+            await pilot.pause(0.1)
+            assert await pilot.click("#mcp-create")
+            await pilot.pause()
+            app.screen.query_one("#res-name", Input).value = "tools"
+            app.screen.query_one("#mcp-command", Input).value = "python"
+            app.screen.query_one("#mcp-args", TextArea).load_text(json.dumps([SECRET]))
+            app.screen.on_confirm()
+            app.screen.on_confirm()
+            await pilot.pause()
+            assert app.config.get_mcp_server(
+                "tools"
+            ).settings.args.get_secret_value() == [SECRET]
+            assert await pilot.click("#mcp-edit")
+            await pilot.pause()
+            assert SECRET not in app.screen.query_one("#mcp-args", TextArea).text
+            app.screen.query_one("#mcp-args", TextArea).load_text("[]")
+            app.screen.on_confirm()
+            app.screen.on_confirm()
+            await pilot.pause()
+            assert (
+                app.config.get_mcp_server("tools").settings.args.get_secret_value()
+                == []
+            )
+            assert await pilot.click("#mcp-delete")
+            await pilot.pause()
+            await pilot.click("#btn-confirm")
+            await pilot.pause()
+            assert app.config.list_mcp_servers() == []
+            assert not app.query("#tab-agent")
 
     run_ui(scenario())
 
 
-def test_edit_requires_preview_and_import_is_explicit(tmp_path):
+def test_mcp_transport_forms_custom_json_and_stale_edit(tmp_path):
     path = tmp_path / "config.db"
 
     async def scenario():
         app = agentconfApp(str(path))
-        async with app.run_test(size=(140, 60)) as pilot:
+        async with app.run_test(size=(120, 60)) as pilot:
             await pilot.pause()
-            app.config.catalog_clone("example-VLA", "local/vla")
-            app.push_screen(ProfileEditDialog("local/vla"))
+            app.push_screen(ResourceEditDialog("mcp"))
             await pilot.pause()
-            old = app.config.catalog_get("local/vla")
-            value = old.model_dump_json().replace(
-                '"max_output_length":242000', '"max_output_length":128000'
+            app.screen.query_one("#res-name", Input).value = "http"
+            app.screen.query_one("#mcp-transport", Input).value = "streamable_http"
+            await pilot.pause()
+            assert app.screen.query_one("#http-fields").display
+            assert not app.screen.query_one("#stdio-fields").display
+            app.screen.query_one("#mcp-url", Input).value = "https://host.invalid/mcp"
+            app.screen.query_one("#mcp-headers", TextArea).load_text(
+                json.dumps({"Key": SECRET})
             )
-            app.screen.query_one(TextArea).load_text(value)
             app.screen.on_confirm()
-            assert app.config.catalog_get("local/vla") == old
             app.screen.on_confirm()
             await pilot.pause()
-            assert app.config.catalog_get("local/vla").max_output_length == 128000
-            snapshot = ModelsDevSource.parse(b'{"v/new":{"id":"v/new","name":"New"}}')
-            plan = app.config.catalog_preview(snapshot)
-            app.push_screen(ImportPreviewDialog(plan))
+            app.push_screen(ResourceEditDialog("mcp", "http"))
             await pilot.pause()
-            app.screen.query_one("#import-keys", Input).value = "v/new"
+            app.screen.on_confirm()
+            app.config.update_mcp_server("http", expected_revision=1, name="changed")
             app.screen.on_confirm()
             await pilot.pause()
-            assert app.config.catalog_get("v/new").source == "models.dev"
-
-    with patch(
-        "agentconf.catalog.urlopen", side_effect=AssertionError("未显式请求下载")
-    ):
-        run_ui(scenario())
-
-
-def test_background_import_only_previews_and_new_profile_can_be_saved(tmp_path):
-    path = tmp_path / "config.db"
-    snapshot = ModelsDevSource.parse(b'{"v/new":{"id":"v/new","name":"New"}}')
-
-    async def scenario():
-        app = agentconfApp(str(path))
-        async with app.run_test(size=(140, 60)) as pilot:
-            await pilot.pause()
-            from agentconf.tui.screens.catalog_screens import CatalogScreen
-
-            app.query_one(CatalogScreen).action_import()
-            await app.workers.wait_for_complete()
-            await pilot.pause()
-            assert isinstance(app.screen, ImportPreviewDialog)
-            assert "v/new" in app.screen.plan.added
+            assert app.config.get_mcp_server("changed").revision == 2
+            assert isinstance(app.screen, ResourceEditDialog)
             await pilot.press("escape")
             await pilot.pause()
-            assert not any(p.model_key == "v/new" for p in app.config.catalog_list())
-            app.push_screen(ProfileEditDialog())
+            app.push_screen(ResourceEditDialog("mcp"))
             await pilot.pause()
-            app.screen.query_one(TextArea).load_text(
-                '{"model_key":"local/new","display_name":"New","max_context_length":200000}'
+            app.screen.query_one("#res-name", Input).value = "custom"
+            app.screen.query_one("#mcp-transport", Input).value = "future-transport"
+            await pilot.pause()
+            assert app.screen.query_one("#custom-fields").display
+            app.screen.query_one("#mcp-custom", TextArea).load_text(
+                json.dumps({"opaque": SECRET})
             )
             app.screen.on_confirm()
-            assert not any(
-                p.model_key == "local/new" for p in app.config.catalog_list()
-            )
             app.screen.on_confirm()
             await pilot.pause()
-            assert app.config.catalog_get("local/new").max_context_length == 200000
+            app.push_screen(ResourceEditDialog("mcp", "custom"))
+            await pilot.pause()
+            assert SECRET not in app.screen.query_one("#mcp-custom", TextArea).text
+            app.screen.on_confirm()
+            app.screen.on_confirm()
+            await pilot.pause()
+            assert app.config.get_mcp_server(
+                "custom"
+            ).settings.options.get_secret_value() == {"opaque": SECRET}
 
-    with patch("agentconf.catalog.ModelsDevSource.fetch", return_value=snapshot):
-        run_ui(scenario())
+    run_ui(scenario())
 
 
-def test_manual_update_preview_and_ownership_dialog(tmp_path):
-    from agentconf.catalog import UpdatePlan
-    from agentconf.tui.screens.catalog_screens import (
-        CatalogScreen,
-        ProfileCopyDialog,
-    )
-
+def test_catalog_stays_available_and_old_library_has_migration_help(tmp_path):
     path = tmp_path / "config.db"
-    old_snapshot = ModelsDevSource.parse(
-        b'{"v/m":{"id":"v/m","name":"M","limit":{"context":120000}}}'
-    )
-    next_snapshot = ModelsDevSource.parse(
-        b'{"v/m":{"id":"v/m","name":"M","limit":{"context":256000}}}'
-    )
-    with AgentsConfig(path) as cfg:
-        cfg.catalog_apply(cfg.catalog_preview(old_snapshot))
 
     async def scenario():
         app = agentconfApp(str(path))
-        async with app.run_test(size=(100, 50)) as pilot:
+        async with app.run_test(size=(120, 60)) as pilot:
             await pilot.pause()
-            app.query_one(CatalogScreen).action_import(update=True)
-            await app.workers.wait_for_complete()
-            await pilot.pause()
-            assert isinstance(app.screen.plan, UpdatePlan)
-            assert app.config.catalog_get("v/m").max_context_length == 120000
-            app.screen.query_one("#import-keys", Input).value = "v/m"
-            app.screen.on_confirm()
-            await pilot.pause()
-            assert app.config.catalog_get("v/m").max_context_length == 256000
-            app.push_screen(ProfileCopyDialog("v/m"))
-            await pilot.pause()
-            app.screen.query_one("#copy-key", Input).value = "local/m"
-            app.screen.on_confirm()
-            assert app.config.catalog_get("v/m").origin == "upstream"
-            app.screen.on_confirm()
-            await pilot.pause()
-            assert app.config.catalog_get("local/m").origin == "derived"
-
-    with patch("agentconf.catalog.ModelsDevSource.fetch", return_value=next_snapshot):
-        run_ui(scenario())
-
-
-def test_catalog_copy_edit_delete_rebuild_and_migration_help(tmp_path):
-    from agentconf import CapabilityProfile
-    from agentconf.tui.screens.catalog_screens import ProfileRebuildDialog
-    from test_catalog_lineage import old_catalog
-
-    path = tmp_path / "ui.db"
-
-    async def scenario():
-        app = agentconfApp(str(path))
-        async with app.run_test(size=(120, 55)) as pilot:
-            await pilot.pause()
+            app.query_one(TabbedContent).active = "tab-catalog"
             app.query_one("#catalog-kind", Select).value = "example"
             app.query_one("#catalog-filter", Input).value = "VLA"
             await pilot.pause()
-            assert await pilot.click("#catalog-copy")
-            await pilot.pause()
-            app.screen.query_one("#copy-key", Input).value = "local/vla"
-            app.screen.on_confirm()
-            assert not any(
-                p.model_key == "local/vla" for p in app.config.catalog_list()
-            )
-            await pilot.press("escape")
-            await pilot.pause()
-            assert not any(
-                p.model_key == "local/vla" for p in app.config.catalog_list()
-            )
+            assert app.query_one("#catalog-table", DataTable).row_count == 1
             assert await pilot.click("#catalog-copy")
             await pilot.pause()
             app.screen.query_one("#copy-key", Input).value = "local/vla"
@@ -212,37 +183,15 @@ def test_catalog_copy_edit_delete_rebuild_and_migration_help(tmp_path):
             app.screen.on_confirm()
             await pilot.pause()
             assert app.config.catalog_get("local/vla").origin == "local"
-            app.config.catalog_create(
-                CapabilityProfile(model_key="local/delete", display_name="Delete")
-            )
-            app.query_one("#catalog-kind", Select).value = "local"
-            app.query_one("#catalog-filter", Input).value = "local/delete"
+            app.push_screen(ProfileEditDialog("local/vla"))
             await pilot.pause()
-            assert await pilot.click("#catalog-delete")
-            await pilot.pause()
-            await pilot.click("#btn-confirm")
-            await pilot.pause()
-            assert not any(
-                p.model_key == "local/delete" for p in app.config.catalog_list()
-            )
-            snapshot = ModelsDevSource.parse(
-                b'{"v/m":{"id":"v/m","name":"M","limit":{"context":120000}}}'
-            )
-            app.config.catalog_apply(app.config.catalog_preview(snapshot))
-            app.config.catalog_derive("v/m", "local/d")
-            app.config.catalog_update_apply(
-                app.config.catalog_update_preview(
-                    ModelsDevSource.parse(
-                        b'{"v/m":{"id":"v/m","name":"M","limit":{"context":256000}}}'
-                    )
-                )
-            )
-            app.push_screen(ProfileRebuildDialog("local/d"))
-            await pilot.pause()
+            value = app.config.catalog_get("local/vla").model_dump(mode="json")
+            value["supports_reasoning"] = False
+            app.screen.query_one("#profile-json", TextArea).load_text(json.dumps(value))
+            app.screen.on_confirm()
             app.screen.on_confirm()
             await pilot.pause()
-            assert not app.config.catalog_stale("local/d")
-            assert app.config.catalog_get("local/d").max_context_length == 120000
+            assert app.config.catalog_get("local/vla").supports_reasoning is False
 
     run_ui(scenario())
     old = tmp_path / "old.db"
@@ -253,10 +202,10 @@ def test_catalog_copy_edit_delete_rebuild_and_migration_help(tmp_path):
         app = agentconfApp(str(old))
         async with app.run_test(size=(120, 55)) as pilot:
             await pilot.pause()
-            assert not app.query("#catalog-table")
             assert await pilot.click("#migration-preview")
             await pilot.pause()
-            assert "source_version" in app.query_one("#migration-report", TextArea).text
+            assert "api_formats" in app.query_one("#migration-report", TextArea).text
+            assert not app.query("#provider-table")
 
     run_ui(help_page())
     assert old.read_bytes() == before

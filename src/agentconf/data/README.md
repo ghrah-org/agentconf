@@ -18,3 +18,5 @@ uv run python scripts/build_catalog_seed.py /path/to/models.json \
 
 种子仅随 schema 首次初始化写入一次。升级包、重开数据库或主动清空目录后，程序都
 不会重新播种；后续新增通过显式导入接受；手动升级可以更新同来源 upstream 原件，并保护 local/derived/example 档案。不要在这里放连接地址、API Key 或 Agent。
+
+当前封装版本为 schema 5 / normalizer 4，保留同一份原始 models.json 的 SHA256；本次未重新拉取模型数据。旧导入/更新计划需要重新预览。

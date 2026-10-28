@@ -91,6 +91,13 @@ class CatalogRepository:
     def __init__(self, conn: sqlite3.Connection) -> None:
         self.conn = conn
 
+    @property
+    def endpoint_table(self):
+        row = self.conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='model_endpoints'"
+        ).fetchone()
+        return "model_endpoints" if row else "model_instances"
+
     # ── 读取 ──
 
     def get(self, key: str) -> CapabilityProfile:
@@ -127,7 +134,7 @@ class CatalogRepository:
             return []
         with closing(sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)) as conn:
             conn.row_factory = sqlite3.Row
-            if conn.execute("PRAGMA user_version").fetchone()[0] not in {2, 3, 4}:
+            if conn.execute("PRAGMA user_version").fetchone()[0] not in {2, 3, 4, 5}:
                 raise MigrationError(
                     "目录预览不迁移旧库；请使用 migrate prepare/apply 显式升级"
                 )
@@ -138,7 +145,7 @@ class CatalogRepository:
         bindings = [
             row[0]
             for row in self.conn.execute(
-                "SELECT name FROM model_instances WHERE capabilities_key=? ORDER BY name",
+                f"SELECT name FROM {self.endpoint_table} WHERE capabilities_key=? ORDER BY name",
                 (key,),
             )
         ]
@@ -171,7 +178,7 @@ class CatalogRepository:
         models = [
             tuple(row)
             for row in self.conn.execute(
-                "SELECT id,name,model_type,capabilities_key FROM model_instances WHERE capabilities_key=? ORDER BY id",
+                f"SELECT id,name,model_type,capabilities_key FROM {self.endpoint_table} WHERE capabilities_key=? ORDER BY id",
                 (key,),
             )
         ]
@@ -468,7 +475,7 @@ class CatalogRepository:
             moved = CapabilityProfile.model_validate(values)
             insert_profile(self.conn, moved)
             self.conn.execute(
-                "UPDATE model_instances SET capabilities_key=? WHERE capabilities_key=?",
+                f"UPDATE {self.endpoint_table} SET capabilities_key=? WHERE capabilities_key=?",
                 (new_key, key),
             )
             self.conn.execute(
@@ -661,7 +668,7 @@ class CatalogRepository:
             )
             insert_profile(self.conn, CapabilityProfile.model_validate(values))
             self.conn.execute(
-                "UPDATE model_instances SET capabilities_key=? WHERE capabilities_key=?",
+                f"UPDATE {self.endpoint_table} SET capabilities_key=? WHERE capabilities_key=?",
                 (relocation.new_key, key),
             )
             self.conn.execute(

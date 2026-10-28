@@ -1,6 +1,8 @@
 """历史库升级：预检、WAL 一致性备份、原子回滚与引用保留。"""
 
 import sqlite3
+import json
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -58,19 +60,25 @@ def test_migrate_keeps_ids_references_parameters_and_null_binding(tmp_path, meta
     report = apply_migration(prepare_migration(path))
     with AgentsConfig(path) as cfg:
         assert cfg.get_provider("provider").id == "p"
-        assert cfg.get_model("binding").id == "m"
-        assert cfg.get_model("binding").capabilities_key is None
-        agent = cfg.get_agent("agent")
-        assert agent.id == "a" and agent.model_instance_id == "m"
-        assert agent.temperature == 0.3 and agent.max_tokens == 100
-        assert agent.extra_params == {"custom": True}
+        assert cfg.get_model_endpoint("binding").id == "m"
+        assert cfg.get_model_endpoint("binding").capabilities_key is None
+        agent = json.loads(Path(report["agent_export_path"]).read_text())["agents"][0]
+        assert agent["agent_id"] == "a" and agent["endpoint_id"] == "m"
+        assert agent["request_params"]["temperature"] == 0.3
+        assert agent["request_params"]["max_tokens"] == 100
+        assert agent["request_params"]["extra_params"] == {"custom": True}
         assert (
-            cfg.resolve_agent("agent").model.capabilities.max_context_length == 1000000
+            cfg.resolve_model_endpoint("binding").capabilities.max_context_length
+            == 1000000
         )
-        assert cfg.get_model("binding").created_at.isoformat().startswith("2026-01-01")
+        assert (
+            cfg.get_model_endpoint("binding")
+            .created_at.isoformat()
+            .startswith("2026-01-01")
+        )
         assert cfg._db.conn.execute("PRAGMA foreign_key_check").fetchall() == []
         assert cfg._db.conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
-        assert cfg._db.conn.execute("PRAGMA user_version").fetchone()[0] == 4
+        assert cfg._db.conn.execute("PRAGMA user_version").fetchone()[0] == 5
         assert not {"model_metadata", "metadata_sources"} & cfg._db._tables()
         # 新协议由 Python 校验，旧 providers CHECK 不再阻塞。
         cfg.create_provider("deep", "deepseek", "https://deep.invalid", "test")
@@ -153,7 +161,7 @@ def test_failed_migration_rolls_back_all_schema_and_data(tmp_path):
         )
     apply_migration(prepare_migration(path))
     with AgentsConfig(path) as cfg:
-        assert cfg.get_agent("agent").id == "a"
+        assert cfg.get_model_endpoint("binding").id == "m"
 
 
 def test_wal_backup_includes_latest_committed_rows(tmp_path):
@@ -165,9 +173,13 @@ def test_wal_backup_includes_latest_committed_rows(tmp_path):
     assert path.with_name(path.name + "-wal").exists()
     try:
         report = apply_migration(prepare_migration(path))
-        with AgentsConfig(path) as cfg:
-            assert cfg.get_agent("agent").max_tokens == 987
-            backup = report["backup_path"]
+        assert (
+            json.loads(Path(report["agent_export_path"]).read_text())["agents"][0][
+                "request_params"
+            ]["max_tokens"]
+            == 987
+        )
+        backup = report["backup_path"]
         with sqlite3.connect(backup) as conn:
             assert conn.execute("SELECT max_tokens FROM agents").fetchone()[0] == 987
     finally:
@@ -203,10 +215,15 @@ def test_alias_migration_and_unknown_columns_protection(tmp_path):
     conn.execute("UPDATE model_instances SET model_type='asr'")
     conn.commit()
     conn.close()
-    apply_migration(prepare_migration(path))
+    apply_migration(
+        prepare_migration(path, api_formats={"binding": "openai.audio.transcriptions"})
+    )
     with AgentsConfig(path) as cfg:
-        assert cfg.get_model("binding").model_type == "stt"
-        assert cfg.resolve_model("binding").capabilities.capabilities_type == "stt"
+        assert cfg.get_model_endpoint("binding").model_type == "stt"
+        assert (
+            cfg.resolve_model_endpoint("binding").capabilities.capabilities_type
+            == "stt"
+        )
     unknown = tmp_path / "unknown.db"
     conn = legacy(unknown)
     conn.execute("ALTER TABLE providers ADD COLUMN custom TEXT")
@@ -236,5 +253,5 @@ def test_historical_llm_table_only_removed_when_empty(tmp_path, nonempty):
     else:
         apply_migration(prepare_migration(path))
         with AgentsConfig(path) as cfg:
-            assert cfg.get_model("binding").id == "m"
+            assert cfg.get_model_endpoint("binding").id == "m"
             assert "llm_instances" not in cfg._db._tables()

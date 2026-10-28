@@ -6,7 +6,6 @@
 
 import pytest
 
-from agentconf.models.agent import AgentCreate
 from agentconf.models.base import Modality, ProviderType
 from agentconf.models.capabilities import (
     EmbeddingCapabilities,
@@ -18,9 +17,7 @@ from agentconf.models.capabilities import (
     TTSCapabilities,
     get_capabilities_class,
 )
-from agentconf.models.model_instance import ModelInstance, ModelInstanceCreate
 from agentconf.models.provider import Provider, ProviderCreate
-from agentconf.models.resolved import ResolvedAgentConfig, ResolvedModelConfig
 
 
 # ─── 基础类型测试 ─────────────────────────────────────
@@ -232,131 +229,3 @@ class TestGetCapabilitiesClass:
     def test_unknown_type_returns_generic(self):
         assert get_capabilities_class("unknown_type") is GenericCapabilities
         assert get_capabilities_class("video_gen") is GenericCapabilities
-
-
-# ─── ModelInstance 测试 ───────────────────────────────
-
-
-class TestModelBinding:
-    def test_pure_binding(self):
-        model = ModelInstance(
-            provider_id="p",
-            name="alias",
-            model_name="deployment",
-            capabilities_key="example-VLA",
-        )
-        assert model.capabilities_key == "example-VLA"
-        assert not hasattr(model, "capabilities")
-
-    @pytest.mark.parametrize(
-        "field",
-        ["base_url", "api_key", "capabilities", "metadata_provider", "metadata_model"],
-    )
-    def test_rejects_removed_fields(self, field):
-        with pytest.raises(ValueError):
-            ModelInstanceCreate(
-                provider_name="p", name="m", model_name="remote", **{field: None}
-            )
-
-    def test_alias_normalization(self):
-        model = ModelInstanceCreate(
-            provider_name="p", name="m", model_name="remote", model_type="asr"
-        )
-        assert model.model_type == "stt"
-
-
-# ─── Agent 测试 ───────────────────────────────────────
-
-
-class TestAgentCreate:
-    def test_valid_create(self):
-        ac = AgentCreate(
-            name="reviewer",
-            model_name="gpt4o",
-            temperature=0.5,
-            top_p=0.9,
-        )
-        assert ac.temperature == 0.5
-        assert ac.top_k is None
-
-    def test_invalid_temperature(self):
-        with pytest.raises(ValueError):
-            AgentCreate(
-                name="bad",
-                model_name="gpt4o",
-                temperature=3.0,  # max is 2.0
-            )
-
-    def test_invalid_top_p(self):
-        with pytest.raises(ValueError):
-            AgentCreate(
-                name="bad",
-                model_name="gpt4o",
-                top_p=1.5,  # max is 1.0
-            )
-
-
-# ─── Resolved 测试 ────────────────────────────────────
-
-
-class TestResolvedModels:
-    def test_resolved_model(self):
-        r = ResolvedModelConfig(
-            provider_name="openai",
-            provider_type="openai",
-            base_url="https://api.openai.com/v1",
-            api_key="sk-test",
-            model_name="gpt-4o",
-        )
-        assert r.api_key == "sk-test"
-        assert r.model_type == "llm"  # 默认值
-        assert r.capabilities is None
-
-    def test_resolved_model_with_capabilities(self):
-        caps = LLMCapabilities(supports_vision=True, max_context_length=128000)
-        r = ResolvedModelConfig(
-            provider_name="openai",
-            provider_type="openai",
-            base_url="https://api.openai.com/v1",
-            api_key="sk-test",
-            model_name="gpt-4o",
-            model_type="llm",
-            capabilities=caps,
-        )
-        assert r.capabilities.supports_vision is True
-        assert r.capabilities.max_context_length == 128000
-
-    def test_resolved_agent(self):
-        model = ResolvedModelConfig(
-            provider_name="openai",
-            provider_type="openai",
-            base_url="https://api.openai.com/v1",
-            api_key="sk-test",
-            model_name="gpt-4o",
-        )
-        agent = ResolvedAgentConfig(
-            agent_name="reviewer",
-            model=model,
-            temperature=0.3,
-        )
-        assert agent.model.model_name == "gpt-4o"
-        assert agent.extra_params is None
-
-    def test_resolved_agent_to_dict(self):
-        model = ResolvedModelConfig(
-            provider_name="openai",
-            provider_type="openai",
-            base_url="https://api.openai.com/v1",
-            api_key="sk-test",
-            model_name="gpt-4o",
-            capabilities=LLMCapabilities(supports_vision=True),
-        )
-        agent = ResolvedAgentConfig(
-            agent_name="reviewer",
-            model=model,
-            temperature=0.3,
-        )
-        d = agent.model_dump()
-        assert d["agent_name"] == "reviewer"
-        assert d["model"]["model_name"] == "gpt-4o"
-        assert d["model"]["capabilities"]["supports_vision"] is True

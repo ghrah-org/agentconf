@@ -132,3 +132,15 @@ CatalogScreen .action-bar {
 CatalogScreen .action-bar Button {
     min-width: 10;
 }
+
+.resource-actions {
+    dock: bottom;
+    height: 6;
+    layout: grid;
+    grid-size: 3 2;
+    grid-gutter: 0 1;
+}
+.resource-actions Button { margin: 0 1; }
+.settings-form { height: auto; }
+.resource-json { height: 14; min-height: 4; }
+.compact-json { height: 4; }

@@ -89,6 +89,51 @@ def main(argv: list[str] | None = None) -> None:
     migrate.add_parser("apply").add_argument("--plan", required=True)
     for cmd in [*sub.choices.values(), *migrate.choices.values()]:
         cmd.add_argument("--db-path", default=argparse.SUPPRESS)
+    from agentconf.operations import DOMAINS
+
+    for domain in DOMAINS:
+        group = commands.add_parser(domain)
+        actions = group.add_subparsers(dest="operation", required=True)
+        listing = actions.add_parser("list")
+        listing.add_argument("--show-secrets", action="store_true")
+        if domain == "endpoint":
+            listing.add_argument("--type", dest="model_type")
+            listing.add_argument("--api-format")
+            listing.add_argument("--provider", dest="provider_name")
+            listing.add_argument("--capability", dest="capability_filter")
+        if domain == "mcp":
+            listing.add_argument("--transport")
+        for action in (
+            "show",
+            "create",
+            "update",
+            "delete",
+            "references" if domain == "provider" else "resolve",
+        ):
+            cmd = actions.add_parser(action)
+            if action != "create":
+                cmd.add_argument("key")
+            if action in {"create", "update"}:
+                cmd.add_argument("--file", required=True)
+            if action in {"update", "delete"}:
+                cmd.add_argument("--expected-revision", type=int)
+                cmd.add_argument("--expected-id")
+            if action in {"create", "update", "delete"}:
+                cmd.add_argument("--apply", action="store_true")
+            if action in {"show", "resolve"}:
+                cmd.add_argument("--show-secrets", action="store_true")
+        for cmd in actions.choices.values():
+            cmd.add_argument("--db-path", default=argparse.SUPPRESS)
+    initializing = commands.add_parser("init")
+    initializing.add_argument("--db-path", default=argparse.SUPPRESS)
+    removed = commands.add_parser("agent", help="旧 Agent 聚合配置已移出")
+    removed.add_argument("legacy_args", nargs=argparse.REMAINDER)
+    migrate.choices["prepare"].add_argument(
+        "--formats", help="端点名称到 api_format 的 JSON 文件"
+    )
+    migrate.choices["prepare"].add_argument(
+        "--relocations", help="人工能力键到 local/ 键的 JSON 文件"
+    )
     args = parser.parse_args(argv)
 
     def emit(value):
@@ -101,9 +146,30 @@ def main(argv: list[str] | None = None) -> None:
             agentconfApp(db_path=args.db_path).run()
             return
         path = Path(args.db_path or AgentsConfig.DEFAULT_DB_PATH).expanduser().resolve()
+        if args.command == "agent":
+            raise ValueError(
+                "Agent 聚合已移出 agentconf；请解析端点并在下游保存请求参数"
+            )
+        if args.command == "init":
+            with AgentsConfig(path) as cfg:
+                emit({"schema_version": 5, "catalog_entries": len(cfg.catalog_list())})
+            return
+        if args.command in DOMAINS:
+            run_resource(args, path, emit)
+            return
         if args.command == "migrate":
             if args.operation == "prepare":
-                plan = prepare_migration(path)
+                plan = prepare_migration(
+                    path,
+                    api_formats=json.loads(Path(args.formats).read_text())
+                    if args.formats
+                    else None,
+                    capability_relocations=json.loads(
+                        Path(args.relocations).read_text()
+                    )
+                    if args.relocations
+                    else None,
+                )
                 plan.save(args.plan_out)
                 emit(plan.model_dump(mode="json"))
             else:
@@ -349,3 +415,115 @@ def main(argv: list[str] | None = None) -> None:
             emit(report)
     except (AgentsConfigError, ValueError, KeyError, OSError, sqlite3.Error) as exc:
         parser.exit(1, f"{exc}\n")
+
+
+def run_resource(args, path, emit):
+    from agentconf.operations import (
+        get_resource,
+        list_resources,
+        resource_input,
+        validate_input,
+        apply_resource,
+        delete_resource,
+        resolve_resource,
+    )
+    from contextlib import ExitStack
+
+    with ExitStack() as stack:
+        cfg = (
+            stack.enter_context(AgentsConfig(path, read_only=True))
+            if path.exists()
+            else None
+        )
+        domain, operation = args.command, args.operation
+        show = getattr(args, "show_secrets", False)
+        if operation == "list":
+            filters = {
+                key: getattr(args, key)
+                for key in (
+                    "model_type",
+                    "api_format",
+                    "provider_name",
+                    "capability_filter",
+                    "transport",
+                )
+                if getattr(args, key, None) is not None
+            }
+            emit(
+                [
+                    m.model_dump(mode="json", context={"show_secrets": show})
+                    for m in list_resources(cfg, domain, **filters)
+                ]
+                if cfg
+                else []
+            )
+            return
+        old = (
+            get_resource(cfg, domain, args.key)
+            if operation not in {"create"} and cfg
+            else None
+        )
+        if operation != "create" and old is None:
+            raise ValueError("资源不存在")
+        if operation == "show":
+            emit(
+                {
+                    "resource": old.model_dump(
+                        mode="json", context={"show_secrets": show}
+                    ),
+                    "input": resource_input(cfg, domain, old, show_secrets=show),
+                }
+            )
+        elif operation == "references":
+            emit({"references": cfg.provider_references(args.key)})
+        elif operation == "resolve":
+            emit(
+                resolve_resource(cfg, domain, args.key).model_dump(
+                    mode="json", context={"show_secrets": show}
+                )
+            )
+        elif operation in {"create", "update"}:
+            payload = json.loads(Path(args.file).read_text(encoding="utf-8"))
+            if not isinstance(payload, dict):
+                raise ValueError("资源文件必须为 JSON 对象")
+            candidate, patch = validate_input(cfg, domain, payload, old)
+            report = {
+                "operation": operation,
+                "preview": candidate.model_dump(mode="json"),
+            }
+            if old:
+                report["revision"] = old.revision
+                report["id"] = old.id
+            if args.apply:
+                if old and args.expected_revision is None:
+                    raise ValueError("更新必须填写 --expected-revision")
+                if old and (
+                    args.expected_revision != old.revision
+                    or (args.expected_id and args.expected_id != old.id)
+                ):
+                    raise ValueError("资源已变化，请重新预览")
+                with AgentsConfig(path) as writer:
+                    saved = apply_resource(writer, domain, patch, old=old)
+                    report["saved"] = saved.model_dump(mode="json")
+            emit(report)
+        elif operation == "delete":
+            report = {
+                "delete": old.model_dump(mode="json"),
+                "revision": old.revision,
+                "references": cfg.provider_references(args.key)
+                if domain == "provider"
+                else [],
+            }
+            if args.apply:
+                if args.expected_revision is None:
+                    raise ValueError("删除必须填写 --expected-revision")
+                with AgentsConfig(path) as writer:
+                    delete_resource(
+                        writer,
+                        domain,
+                        args.key,
+                        args.expected_revision,
+                        expected_id=args.expected_id or old.id,
+                    )
+                report["deleted"] = args.key
+            emit(report)

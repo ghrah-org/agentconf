@@ -126,8 +126,8 @@ def main() -> None:
         for key, typ, caps in EXAMPLES
     )
     seed = dict(
-        schema_version=4,
-        seed_version=3,
+        schema_version=5,
+        seed_version=4,
         generated_at=at.isoformat(),
         normalizer_version=snapshot.normalizer_version,
         source_url=snapshot.source_url,

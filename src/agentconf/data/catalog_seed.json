@@ -1,8 +1,8 @@
 {
-  "schema_version": 4,
-  "seed_version": 3,
+  "schema_version": 5,
+  "seed_version": 4,
   "generated_at": "2026-10-27T00:00:00+00:00",
-  "normalizer_version": 3,
+  "normalizer_version": 4,
   "source_url": "https://models.dev/models.json",
   "source_sha256": "e1909095cbe83275e319edab1071a966bb19fb48a13057c561544a4dce4249cd",
   "profiles": [

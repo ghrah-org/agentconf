@@ -2,9 +2,7 @@
 
 import json
 from unittest.mock import patch
-
 import pytest
-
 from agentconf import AgentsConfig, CapabilityProfile
 from agentconf.catalog import ModelsDevSource, prepare_import, revision
 from agentconf.tui import main
@@ -18,7 +16,7 @@ def test_import_default_preview_does_not_create_database_or_parent(tmp_path, cap
         main(["catalog", "import", "--db-path", str(path), "--plan-out", str(planfile)])
     report = json.loads(capsys.readouterr().out)
     assert report["added"] == ["vendor/new"]
-    assert not path.exists() and not path.parent.exists()
+    assert not path.exists() and (not path.parent.exists())
     assert planfile.exists()
 
 
@@ -72,7 +70,13 @@ def test_edit_preview_reference_impact_and_stale_revision(tmp_path, capsys):
     with AgentsConfig(path) as cfg:
         old = cfg.catalog_clone("example-VLA", "local/vla")
         cfg.create_provider("p", "openai", "https://local.invalid", "key")
-        cfg.create_model("p", "alias", "deployment", capabilities_key=old.model_key)
+        cfg.create_model_endpoint(
+            "p",
+            "alias",
+            "deployment",
+            capabilities_key=old.model_key,
+            api_format="openai.chat_completions",
+        )
     edited = CapabilityProfile.model_validate(
         {**old.model_dump(), "max_context_length": 512000}
     )
@@ -97,7 +101,10 @@ def test_edit_preview_reference_impact_and_stale_revision(tmp_path, capsys):
     main(args + ["--expected-revision", str(revision(old)), "--apply"])
     capsys.readouterr()
     with AgentsConfig(path) as cfg:
-        assert cfg.resolve_model("alias").capabilities.max_context_length == 512000
+        assert (
+            cfg.resolve_model_endpoint("alias").capabilities.max_context_length
+            == 512000
+        )
     with pytest.raises(SystemExit) as caught:
         main(args + ["--expected-revision", str(revision(old)), "--apply"])
     assert caught.value.code == 1
@@ -141,7 +148,6 @@ def test_update_cli_download_preview_then_apply_fixed_plan(tmp_path, capsys):
     assert json.loads(capsys.readouterr().out)["updated"] == ["v/m"]
     with AgentsConfig(path) as cfg:
         assert cfg.catalog_get("v/m").max_context_length == 256000
-    # 原件不能再交出维护权；人工调整需创建派生。
     with pytest.raises(SystemExit):
         main(["catalog", "manage", "v/m", "--manual", "--db-path", str(path)])
     main(
@@ -185,12 +191,12 @@ def test_catalog_crud_lineage_and_migration_commands(tmp_path, capsys):
     assert report["source_version"] == 3
     assert path.read_bytes() == before
     main(["migrate", "apply", "--plan", str(planfile)])
-    assert json.loads(capsys.readouterr().out)["schema_version"] == 4
+    assert json.loads(capsys.readouterr().out)["schema_version"] == 5
     base = ["--db-path", str(path), "catalog"]
     main(base + ["derive", "v/m", "--as", "local/tuned"])
     assert json.loads(capsys.readouterr().out)["new_key"] == "local/tuned"
     with AgentsConfig(path) as cfg:
-        assert not any(p.model_key == "local/tuned" for p in cfg.catalog_list())
+        assert not any((p.model_key == "local/tuned" for p in cfg.catalog_list()))
     main(base + ["derive", "v/m", "--as", "local/tuned", "--apply"])
     assert json.loads(capsys.readouterr().out)["saved"] == "local/tuned"
     main(base + ["variants", "v/m"])
@@ -217,7 +223,7 @@ def test_catalog_crud_lineage_and_migration_commands(tmp_path, capsys):
     )
     assert json.loads(capsys.readouterr().out)["saved"] == "local/new"
     with pytest.raises(Exception):
-        prepare_migration(path)  # 当前库不会再次迁移
+        prepare_migration(path)
 
 
 def test_diff_without_key_and_readonly_edit_are_safe(tmp_path, capsys):
@@ -258,3 +264,130 @@ def test_type_alias_filter_matches_applied_type(tmp_path, capsys):
     report = json.loads(capsys.readouterr().out)
     assert report["added"] == ["v/stt"]
     assert not path.exists()
+
+
+def test_resource_groups_preview_crud_resolve_and_secrets(tmp_path, capsys):
+    from agentconf.models.secure import MASK
+
+    path = tmp_path / "db.sqlite"
+    secret = "CLI-PRIVATE-SENTINEL"
+
+    def call(domain, *args):
+        main([domain, *args, "--db-path", str(path)])
+        output = capsys.readouterr().out
+        assert secret not in output
+        return json.loads(output)
+
+    def file(name, payload):
+        f = tmp_path / name
+        f.write_text(json.dumps(payload))
+        return str(f)
+
+    provider = file(
+        "p.json",
+        dict(
+            name="p",
+            provider_type="future-provider",
+            base_url="https://user:" + secret + "@host.invalid/?token=" + secret,
+            api_key=secret,
+            connection_options={"headers": {"Key": secret}},
+        ),
+    )
+    assert call("provider", "create", "--file", provider)["operation"] == "create"
+    assert not path.exists()
+    assert (
+        call("provider", "create", "--file", provider, "--apply")["saved"]["revision"]
+        == 1
+    )
+    before = path.read_bytes()
+    show = call("provider", "show", "p")
+    assert show["input"]["api_key"] == MASK
+    assert path.read_bytes() == before
+    changed = file(
+        "patch.json",
+        dict(name="renamed", api_key=MASK, base_url=MASK, connection_options=MASK),
+    )
+    assert (
+        call(
+            "provider",
+            "update",
+            "p",
+            "--file",
+            changed,
+            "--expected-revision",
+            "1",
+            "--apply",
+        )["saved"]["name"]
+        == "renamed"
+    )
+    endpoint = file(
+        "e.json",
+        dict(
+            name="model",
+            provider_name="renamed",
+            model_name="request",
+            api_format="openai.responses",
+        ),
+    )
+    call("endpoint", "create", "--file", endpoint, "--apply")
+    assert call("endpoint", "resolve", "model")["model"]["model_name"] == "request"
+    assert len(call("endpoint", "list", "--api-format", "openai.responses")) == 1
+    assert call("provider", "references", "renamed")["references"] == ["model"]
+    with pytest.raises(SystemExit):
+        call("provider", "delete", "renamed", "--expected-revision", "2", "--apply")
+    capsys.readouterr()
+    mcp = file(
+        "m.json",
+        dict(
+            name="model",
+            transport="streamable_http",
+            settings={
+                "url": "https://host.invalid/?token=" + secret,
+                "headers": {"Authorization": secret},
+            },
+        ),
+    )
+    call("mcp", "create", "--file", mcp, "--apply")
+    assert call("mcp", "resolve", "model")["transport"] == "streamable_http"
+    assert len(call("mcp", "list", "--transport", "streamable_http")) == 1
+    main(["mcp", "show", "model", "--db-path", str(path), "--show-secrets"])
+    assert secret in capsys.readouterr().out
+    call("mcp", "delete", "model", "--expected-revision", "1", "--apply")
+    call("endpoint", "delete", "model", "--expected-revision", "1", "--apply")
+    call("provider", "delete", "renamed", "--expected-revision", "2", "--apply")
+    assert call("provider", "list") == []
+
+
+def test_migrate_cli_requires_explicit_format_for_custom_and_preserves_plan(
+    tmp_path, capsys
+):
+    from test_migration import legacy
+
+    path = tmp_path / "old.db"
+    conn = legacy(path)
+    conn.execute("UPDATE providers SET provider_type='custom'")
+    conn.commit()
+    conn.close()
+    planfile = tmp_path / "plan.json"
+    main(["migrate", "prepare", "--db-path", str(path), "--plan-out", str(planfile)])
+    assert json.loads(capsys.readouterr().out)["unresolved"] == ["binding"]
+    with pytest.raises(SystemExit):
+        main(["migrate", "apply", "--plan", str(planfile)])
+    capsys.readouterr()
+    formats = tmp_path / "formats.json"
+    formats.write_text('{"binding":"openai.responses"}')
+    main(
+        [
+            "migrate",
+            "prepare",
+            "--db-path",
+            str(path),
+            "--formats",
+            str(formats),
+            "--plan-out",
+            str(planfile),
+        ]
+    )
+    assert json.loads(capsys.readouterr().out)["unresolved"] == []
+    main(["migrate", "apply", "--plan", str(planfile)])
+    assert json.loads(capsys.readouterr().out)["schema_version"] == 5

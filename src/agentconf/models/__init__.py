@@ -1,34 +1,43 @@
-# SPDX-FileCopyrightText: 2026 chenxya <chenxya@ghrah.org>
-#
 # SPDX-License-Identifier: Apache-2.0
+"""静态连接、能力与两类解析结果的公开模型。"""
 
-"""Pydantic 数据模型"""
-
-from agentconf.models.capability_profile import CapabilityProfile, Origin
 from agentconf.models.base import Modality, ProviderType
 from agentconf.models.capabilities import (
     BaseCapabilities,
-    EmbeddingCapabilities,
-    GenericCapabilities,
-    ImageGenCapabilities,
     LLMCapabilities,
+    EmbeddingCapabilities,
     RerankCapabilities,
-    STTCapabilities,
     TTSCapabilities,
-    get_capabilities_class,
+    STTCapabilities,
+    ImageGenCapabilities,
+    GenericCapabilities,
 )
-from agentconf.models.provider import Provider, ProviderCreate
-from agentconf.models.model_instance import ModelInstance, ModelInstanceCreate
-from agentconf.models.agent import Agent, AgentCreate
-from agentconf.models.resolved import ResolvedModelConfig, ResolvedAgentConfig
+from agentconf.models.capability_profile import CapabilityProfile, Origin
+from agentconf.models.provider import Provider, ProviderCreate, ProviderUpdate
+from agentconf.models.model_endpoint import (
+    ModelEndpoint,
+    ModelEndpointCreate,
+    ModelEndpointUpdate,
+)
+from agentconf.models.mcp_server import (
+    MCPServer,
+    MCPServerCreate,
+    MCPServerUpdate,
+    StdioConnection,
+    StreamableHTTPConnection,
+    GenericMCPConnection,
+)
+from agentconf.models.resolved import (
+    ResolvedModelEndpoint,
+    ResolvedMCPServer,
+    ModelConnection,
+    ModelInfo,
+    ResolvedMetadata,
+)
 
 __all__ = [
-    "CapabilityProfile",
-    "Origin",
-    # 基础类型
     "Modality",
     "ProviderType",
-    # Capabilities
     "BaseCapabilities",
     "LLMCapabilities",
     "EmbeddingCapabilities",
@@ -37,17 +46,23 @@ __all__ = [
     "STTCapabilities",
     "ImageGenCapabilities",
     "GenericCapabilities",
-    "get_capabilities_class",
-    # Provider
+    "CapabilityProfile",
+    "Origin",
     "Provider",
     "ProviderCreate",
-    # Model Instance
-    "ModelInstance",
-    "ModelInstanceCreate",
-    # Agent
-    "Agent",
-    "AgentCreate",
-    # Resolved
-    "ResolvedModelConfig",
-    "ResolvedAgentConfig",
+    "ProviderUpdate",
+    "ModelEndpoint",
+    "ModelEndpointCreate",
+    "ModelEndpointUpdate",
+    "MCPServer",
+    "MCPServerCreate",
+    "MCPServerUpdate",
+    "StdioConnection",
+    "StreamableHTTPConnection",
+    "GenericMCPConnection",
+    "ResolvedModelEndpoint",
+    "ResolvedMCPServer",
+    "ModelConnection",
+    "ModelInfo",
+    "ResolvedMetadata",
 ]

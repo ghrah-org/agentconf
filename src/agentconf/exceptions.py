@@ -7,6 +7,7 @@
 
 class AgentsConfigError(Exception):
     """基础异常类"""
+
     pass
 
 
@@ -48,29 +49,59 @@ class CapabilityTypeMismatchError(CatalogError):
 
 class ProviderNotFoundError(AgentsConfigError):
     """Provider 未找到"""
+
     pass
 
 
 class ProviderAlreadyExistsError(AgentsConfigError):
     """Provider 已存在"""
+
     pass
 
 
 class ModelNotFoundError(AgentsConfigError):
     """Model Instance 未找到"""
+
     pass
 
 
 class ModelAlreadyExistsError(AgentsConfigError):
     """Model Instance 已存在"""
+
     pass
 
 
 class AgentNotFoundError(AgentsConfigError):
     """Agent 未找到"""
+
     pass
 
 
 class AgentAlreadyExistsError(AgentsConfigError):
     """Agent 已存在"""
+
     pass
+
+
+class EndpointNotFoundError(AgentsConfigError):
+    """模型端点不存在。"""
+
+
+class MCPServerNotFoundError(AgentsConfigError):
+    """MCP 配置不存在。"""
+
+
+class ResourceAlreadyExistsError(AgentsConfigError):
+    """资源名称或身份重复。"""
+
+
+class ResourceInUseError(AgentsConfigError):
+    """连接仍被模型端点引用。"""
+
+
+class RevisionConflictError(AgentsConfigError):
+    """预览后的资源已变化。"""
+
+
+class LegacyAPIError(AgentsConfigError):
+    """旧聚合 API 已移除，需要迁移到独立资源 API。"""

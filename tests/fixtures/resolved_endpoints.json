@@ -1,0 +1,170 @@
+{
+  "chat": {
+    "endpoint_id": "example-endpoint-chat",
+    "name": "chat",
+    "revision": 1,
+    "connection": {
+      "provider_id": "example-provider-openai",
+      "provider_name": "openai",
+      "provider_revision": 1,
+      "provider_type": "openai",
+      "api_format": "openai.chat_completions",
+      "base_url": "https://openai.example.invalid/v1",
+      "api_key": "EXAMPLE_ONLY",
+      "connection_options": {},
+      "sdk_hint": {
+        "distribution": "openai",
+        "import_name": "openai"
+      }
+    },
+    "model": {
+      "model_name": "example-chat-request",
+      "model_type": "llm"
+    },
+    "metadata": {
+      "model_key": "example-VLA",
+      "origin": "example",
+      "source": "example",
+      "revision": 1,
+      "derived_from": null,
+      "base_fingerprint": null,
+      "stale": false
+    },
+    "capabilities": {
+      "capabilities_type": "llm",
+      "input_modalities": [
+        "text",
+        "image"
+      ],
+      "extra": null,
+      "output_modalities": [
+        "text"
+      ],
+      "supports_streaming": true,
+      "supports_function_calling": true,
+      "supports_reasoning": true,
+      "supports_vision": true,
+      "supports_json_mode": false,
+      "max_context_length": 1000000,
+      "max_output_length": 242000
+    },
+    "capability_sources": {
+      "input_modalities": "example",
+      "extra": "default",
+      "output_modalities": "example",
+      "supports_streaming": "default",
+      "supports_function_calling": "example",
+      "supports_reasoning": "example",
+      "supports_vision": "example",
+      "supports_json_mode": "default",
+      "max_context_length": "example",
+      "max_output_length": "example"
+    }
+  },
+  "responses": {
+    "endpoint_id": "example-endpoint-responses",
+    "name": "responses",
+    "revision": 1,
+    "connection": {
+      "provider_id": "example-provider-openai",
+      "provider_name": "openai",
+      "provider_revision": 1,
+      "provider_type": "openai",
+      "api_format": "openai.responses",
+      "base_url": "https://openai.example.invalid/v1",
+      "api_key": "EXAMPLE_ONLY",
+      "connection_options": {},
+      "sdk_hint": {
+        "distribution": "openai",
+        "import_name": "openai"
+      }
+    },
+    "model": {
+      "model_name": "example-responses-request",
+      "model_type": "llm"
+    },
+    "metadata": null,
+    "capabilities": {
+      "capabilities_type": "llm",
+      "input_modalities": [
+        "text"
+      ],
+      "extra": null,
+      "output_modalities": [
+        "text"
+      ],
+      "supports_streaming": true,
+      "supports_function_calling": true,
+      "supports_reasoning": true,
+      "supports_vision": false,
+      "supports_json_mode": false,
+      "max_context_length": 1000000,
+      "max_output_length": null
+    },
+    "capability_sources": {
+      "input_modalities": "default",
+      "extra": "default",
+      "output_modalities": "default",
+      "supports_streaming": "default",
+      "supports_function_calling": "default",
+      "supports_reasoning": "default",
+      "supports_vision": "default",
+      "supports_json_mode": "default",
+      "max_context_length": "default",
+      "max_output_length": "default"
+    }
+  },
+  "deepseek-chat": {
+    "endpoint_id": "example-endpoint-deepseek-chat",
+    "name": "deepseek-chat",
+    "revision": 1,
+    "connection": {
+      "provider_id": "example-provider-deepseek",
+      "provider_name": "deepseek",
+      "provider_revision": 1,
+      "provider_type": "deepseek",
+      "api_format": "openai.chat_completions",
+      "base_url": "https://deepseek.example.invalid/v1",
+      "api_key": "EXAMPLE_ONLY",
+      "connection_options": {},
+      "sdk_hint": {
+        "distribution": "openai",
+        "import_name": "openai"
+      }
+    },
+    "model": {
+      "model_name": "example-deepseek-request",
+      "model_type": "llm"
+    },
+    "metadata": null,
+    "capabilities": {
+      "capabilities_type": "llm",
+      "input_modalities": [
+        "text"
+      ],
+      "extra": null,
+      "output_modalities": [
+        "text"
+      ],
+      "supports_streaming": true,
+      "supports_function_calling": true,
+      "supports_reasoning": true,
+      "supports_vision": false,
+      "supports_json_mode": false,
+      "max_context_length": 1000000,
+      "max_output_length": null
+    },
+    "capability_sources": {
+      "input_modalities": "default",
+      "extra": "default",
+      "output_modalities": "default",
+      "supports_streaming": "default",
+      "supports_function_calling": "default",
+      "supports_reasoning": "default",
+      "supports_vision": "default",
+      "supports_json_mode": "default",
+      "max_context_length": "default",
+      "max_output_length": "default"
+    }
+  }
+}

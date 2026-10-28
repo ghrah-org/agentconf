@@ -122,3 +122,13 @@ DataTable {
     height: 18;
     min-height: 8;
 }
+
+CatalogScreen .action-bar {
+    height: 9;
+    layout: grid;
+    grid-size: 3 3;
+    grid-gutter: 0 1;
+}
+CatalogScreen .action-bar Button {
+    min-width: 10;
+}

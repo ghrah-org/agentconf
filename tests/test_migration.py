@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 import pytest
 
-from agentconf import AgentsConfig, MigrationError
+from agentconf import AgentsConfig, MigrationError, prepare_migration, apply_migration
 from agentconf.storage.database import Database
 
 LEGACY_SCHEMA = """
@@ -55,6 +55,7 @@ def legacy(path, metadata=False):
 def test_migrate_keeps_ids_references_parameters_and_null_binding(tmp_path, metadata):
     path = tmp_path / "config.db"
     legacy(path, metadata).close()
+    report = apply_migration(prepare_migration(path))
     with AgentsConfig(path) as cfg:
         assert cfg.get_provider("provider").id == "p"
         assert cfg.get_model("binding").id == "m"
@@ -69,12 +70,12 @@ def test_migrate_keeps_ids_references_parameters_and_null_binding(tmp_path, meta
         assert cfg.get_model("binding").created_at.isoformat().startswith("2026-01-01")
         assert cfg._db.conn.execute("PRAGMA foreign_key_check").fetchall() == []
         assert cfg._db.conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
-        assert cfg._db.conn.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert cfg._db.conn.execute("PRAGMA user_version").fetchone()[0] == 4
         assert not {"model_metadata", "metadata_sources"} & cfg._db._tables()
         # 新协议由 Python 校验，旧 providers CHECK 不再阻塞。
         cfg.create_provider("deep", "deepseek", "https://deep.invalid", "test")
-        backup = cfg._db.backup_path
-        assert backup and backup.exists()
+        backup = __import__("pathlib").Path(report["backup_path"])
+        assert backup.exists()
     with sqlite3.connect(backup) as conn:
         assert conn.execute("PRAGMA user_version").fetchone()[0] == 0
         assert conn.execute("SELECT model_instance_id FROM agents").fetchone()[0] == "m"
@@ -129,9 +130,12 @@ def test_global_name_conflicts_abort_before_backup(tmp_path):
 def test_failed_migration_rolls_back_all_schema_and_data(tmp_path):
     path = tmp_path / "config.db"
     legacy(path, metadata=True).close()
-    with patch.object(Database, "_seed", side_effect=RuntimeError("injected failure")):
+    plan = prepare_migration(path)
+    with patch.object(
+        Database, "_validate_rows", side_effect=RuntimeError("injected failure")
+    ):
         with pytest.raises(RuntimeError, match="injected failure"):
-            AgentsConfig(path)
+            apply_migration(plan)
     with sqlite3.connect(path) as conn:
         assert conn.execute("PRAGMA user_version").fetchone()[0] == 0
         assert "capabilities" in {
@@ -147,6 +151,7 @@ def test_failed_migration_rolls_back_all_schema_and_data(tmp_path):
             ).fetchone()
             is None
         )
+    apply_migration(prepare_migration(path))
     with AgentsConfig(path) as cfg:
         assert cfg.get_agent("agent").id == "a"
 
@@ -159,16 +164,17 @@ def test_wal_backup_includes_latest_committed_rows(tmp_path):
     writer.commit()
     assert path.with_name(path.name + "-wal").exists()
     try:
+        report = apply_migration(prepare_migration(path))
         with AgentsConfig(path) as cfg:
             assert cfg.get_agent("agent").max_tokens == 987
-            backup = cfg._db.backup_path
+            backup = report["backup_path"]
         with sqlite3.connect(backup) as conn:
             assert conn.execute("SELECT max_tokens FROM agents").fetchone()[0] == 987
     finally:
         writer.close()
 
 
-@pytest.mark.parametrize("version", [1, 3, 99])
+@pytest.mark.parametrize("version", [1, 4, 5, 99])
 def test_unknown_versions_rejected_without_mutation(tmp_path, version):
     path = tmp_path / "future.db"
     conn = legacy(path)
@@ -197,6 +203,7 @@ def test_alias_migration_and_unknown_columns_protection(tmp_path):
     conn.execute("UPDATE model_instances SET model_type='asr'")
     conn.commit()
     conn.close()
+    apply_migration(prepare_migration(path))
     with AgentsConfig(path) as cfg:
         assert cfg.get_model("binding").model_type == "stt"
         assert cfg.resolve_model("binding").capabilities.capabilities_type == "stt"
@@ -227,6 +234,7 @@ def test_historical_llm_table_only_removed_when_empty(tmp_path, nonempty):
         with pytest.raises(MigrationError, match="历史.*仍有记录"):
             AgentsConfig(path)
     else:
+        apply_migration(prepare_migration(path))
         with AgentsConfig(path) as cfg:
             assert cfg.get_model("binding").id == "m"
             assert "llm_instances" not in cfg._db._tables()

@@ -48,8 +48,8 @@ def test_offline_seed_once_and_no_fake_connections(tmp_path):
         "agentconf.catalog.urlopen", side_effect=AssertionError("初始化不可联网")
     ):
         with AgentsConfig(path) as cfg:
-            assert len(cfg.catalog_list(entry_kind="model")) > 500
-            examples = cfg.catalog_list(entry_kind="example")
+            assert len(cfg.catalog_list(origin="upstream")) > 500
+            examples = cfg.catalog_list(origin="example")
             assert {p.model_key for p in examples} >= {
                 "example-VLA",
                 "example-embedding",
@@ -64,7 +64,7 @@ def test_offline_seed_once_and_no_fake_connections(tmp_path):
             cfg._db.conn.commit()
         with AgentsConfig(path) as cfg:
             assert cfg.catalog_list() == []
-            assert cfg._db.conn.execute("PRAGMA user_version").fetchone()[0] == 2
+            assert cfg._db.conn.execute("PRAGMA user_version").fetchone()[0] == 4
 
 
 @pytest.mark.parametrize(
@@ -190,7 +190,9 @@ def test_binding_constraints_clear_rebind_and_cascades(config):
     config.create_model("p", "m", "deployment", capabilities_key="example-VLA")
     config.create_agent("a", "m")
     with pytest.raises(CapabilityInUseError):
-        config.catalog_delete("example-VLA")
+        config.catalog_delete(
+            "example-VLA", expected_revision=config.catalog_get("example-VLA").revision
+        )
     with pytest.raises(CapabilityTypeMismatchError):
         config.update_model("m", model_type="embedding")
     assert config.get_model("m").model_type == "llm"
@@ -260,7 +262,7 @@ def test_effective_filter_all_types_and_reject_unknown(config):
 
 
 def test_manual_edit_reference_impact_revision_and_immutable_type(config):
-    old = config.catalog_get("example-VLA")
+    old = config.catalog_clone("example-VLA", "local/vla")
     config.create_model("p", "alias1", "actual-1", capabilities_key=old.model_key)
     config.create_model("p", "alias2", "actual-2", capabilities_key=old.model_key)
     assert config.catalog_references(old.model_key) == ["alias1", "alias2"]
@@ -277,8 +279,7 @@ def test_manual_edit_reference_impact_revision_and_immutable_type(config):
         model_key=old.model_key,
         display_name="Changed type",
         model_type="tts",
-        source="example",
-        entry_kind="example",
+        source="manual",
     )
     with pytest.raises(CatalogError, match="不可变"):
         config.catalog_edit(different_type, expected_revision=revision(saved))
@@ -356,7 +357,7 @@ def test_import_manual_protection_selected_types_and_atomic_race_rollback(config
     result = config.catalog_apply(plan, types=["llm"])
     assert result["added"] == ["a/new"]
     assert config.catalog_get("z/new").display_name == "My correction"
-    assert "z/new" in config.catalog_preview(snapshot(rows)).changed
+    assert "z/new" in config.catalog_preview(snapshot(rows)).conflicts
 
 
 @pytest.mark.parametrize(

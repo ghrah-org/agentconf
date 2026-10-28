@@ -5,6 +5,7 @@ from agentconf.catalog import (
     CatalogSnapshot,
     CatalogSource,
     ImportPlan,
+    UpdatePlan,
     ModelsDevSource,
 )
 from agentconf.client import AgentsConfig
@@ -17,6 +18,9 @@ from agentconf.exceptions import (
     CapabilityTypeMismatchError,
     CatalogError,
     CatalogImportError,
+    CatalogConflictError,
+    CatalogReadOnlyError,
+    MigrationRequiredError,
     MigrationError,
     ModelAlreadyExistsError,
     ModelNotFoundError,
@@ -43,14 +47,20 @@ from agentconf.models import (
     STTCapabilities,
     TTSCapabilities,
 )
-from agentconf.models.capability_profile import CapabilityProfile
+from agentconf.models.capability_profile import CapabilityProfile, Origin
+from agentconf.migrations import MigrationPlan, prepare_migration, apply_migration
 
 __version__ = "0.2.0"
 __all__ = [
     "AgentsConfig",
+    "Origin",
+    "MigrationPlan",
+    "prepare_migration",
+    "apply_migration",
     "CatalogSnapshot",
     "CatalogSource",
     "ImportPlan",
+    "UpdatePlan",
     "ModelsDevSource",
     "CapabilityProfile",
     "Agent",
@@ -79,6 +89,9 @@ __all__ = [
     "CapabilityTypeMismatchError",
     "CatalogError",
     "CatalogImportError",
+    "CatalogConflictError",
+    "CatalogReadOnlyError",
+    "MigrationRequiredError",
     "MigrationError",
     "ModelAlreadyExistsError",
     "ModelNotFoundError",

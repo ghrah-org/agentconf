@@ -1,43 +1,25 @@
 # agentconf
 
-agentconf 是基于 Pydantic 和 SQLite 的多模型配置 SDK，适用于个人终端应用和 Agent
-运行时。它管理连接、模型能力和请求参数；实际模型调用交给 OpenAI 等客户端完成。
+agentconf 是基于 Pydantic 和 SQLite 的多模型配置 SDK。它保存服务连接、请求模型标识与静态能力，并提供离线解析；实际调用由下游客户端完成。
 
-0.2 将配置分成四个实体：
+**本文描述当前开发工作树，尚未发布新的稳定版本。** 当前能力目录采用 schema 4；Provider、ModelInstance、Agent 的旧结构暂时保留，已有消费者仍可通过 `resolve_model` / `resolve_agent` 使用。已有旧数据库必须显式迁移，普通打开不会自动升级。
 
-| 实体 | 保存什么 |
-| --- | --- |
-| Provider | 协议类型、Base URL、API Key |
-| 能力档案 `CapabilityProfile` | 固定发布模型的能力声明，例如上下文、模态、工具和推理支持 |
-| 模型绑定 `ModelInstance` | 全局唯一的绑定名、实际请求模型名、Provider 引用、可选的能力档案键 |
-| Agent | 模型绑定与 temperature、top_p、top_k、max_tokens、extra_params |
+## 安装与打开
 
-能力档案可以被多个绑定共享。请求模型名与档案键分别填写，不按名称推断能力。
-API Key 在数据库中以明文保存，`SecretStr` 只隐藏对象展示时的内容，不提供磁盘加密。
-解析后的配置包含实际密钥，不应直接打印完整解析对象。
-
-## 安装和配置
-
-需要 Python 3.11 或更高版本：
+需要 Python ≥3.11，开发环境使用 uv：
 
 ```sh
-uv add agentconf
-uv run agentconf
-# 或选择另一份库
+uv sync
 uv run agentconf --db-path ./config.db
 ```
 
-不带子命令时打开 TUI。Provider、Model、Agent 页面负责连接、绑定和采样参数；
-“能力目录”页面可筛选真实模型与虚构示例、查看原始声明、创建和纠错，也可显式下载
-导入预览。纠错先显示修改前后内容和引用绑定，再确认保存；取消删除不会执行级联删除。
+裸命令打开 TUI。新库离线写入真实模型种子和七条虚构示例，不创建虚假的 Provider、模型绑定或 Agent。已有库不因包更新、重启或清空目录而重新播种。
 
-默认数据库为 `~/.agentconf/config.db`。第一次创建或升级数据库时，程序离线写入随包
-真实模型种子和七条示例，不创建虚假的 Provider、绑定或 Agent。之后启动不联网、
-不重复播种，也不会因包更新或目录被清空而自动恢复条目。
+默认库位于 `~/.agentconf/config.db`。Provider 保存连接，模型绑定保存实际请求名与能力档案引用，Agent 暂时保存采样参数。API Key 在数据库中为明文，SecretStr 的展示隐藏不等于磁盘加密；不要直接打印带凭据的解析结果。
 
 ## SDK 快速开始
 
-下面使用临时库，重复运行也不会影响个人配置：
+下面使用临时库，不影响个人配置：
 
 ```python
 from pathlib import Path
@@ -46,173 +28,176 @@ from agentconf import AgentsConfig
 
 with TemporaryDirectory() as directory:
     with AgentsConfig(Path(directory) / "config.db") as config:
-        config.create_provider(
-            "gateway", "openai", "https://api.example.com/v1", "your-api-key"
-        )
+        config.create_provider("gateway", "openai", "https://api.example.com/v1", "key")
         config.create_model(
-            provider_name="gateway",
-            name="chat-main",                 # 本地绑定名，全局唯一
-            model_name="actual-deployment-id", # 服务端实际接受的请求名
-            model_type="llm",
-            capabilities_key="example-VLA",    # 虚构能力示范，请替换为合适的真实档案
+            "gateway", "chat-main", "actual-deployment-id",
+            capabilities_key="example-VLA",
         )
-        config.create_agent("assistant", "chat-main", temperature=0.7, max_tokens=4096)
+        config.create_agent("assistant", "chat-main", temperature=0.0)
         resolved = config.resolve_agent("assistant")
+        assert resolved.temperature == 0.0
         assert resolved.model.model_name == "actual-deployment-id"
         assert resolved.model.capabilities.max_context_length == 1_000_000
-        assert resolved.model.capabilities.max_output_length == 242_000
-        assert resolved.model.capability_sources["max_context_length"] == "example"
 ```
 
-真实模型使用目录中的完整规范键，例如 `zhipuai/glm-5.3`。可以先在 TUI 中查看档案，
-也可以调用 `catalog_list(model_type="llm", entry_kind="model")` 和 `catalog_get(key)`。
-`get_model()` 返回纯绑定；通过 `resolve_model()` 或 `resolve_agent()` 获取有效能力。
+请求模型名与档案键分别填写，不按名称猜能力。`get_model` 返回纯绑定；`resolve_model` / `resolve_agent` 生成有效能力。模型连接只从 Provider 获取，不再接受模型级 URL/key/能力覆盖。
 
-模型绑定不接受 `base_url`、`api_key` 或内嵌 `capabilities`。连接只从 Provider 获取，
-更换 Provider 时新建绑定；修改能力时维护档案，再显式绑定：
+原始能力 `None` 表示未声明，`False`、空列表表示显式声明；默认值只在解析中补齐，不回写。未绑定能力的 LLM 默认上下文 1,000,000，支持工具与推理。非 LLM 按各自类型投影；`asr` 规范为 `stt`，未知用途使用 GenericCapabilities，不套 LLM 默认值。
+
+## 能力来源与人工维护
+
+每个 CapabilityProfile 保存完整原始声明、来源和整数 revision。来源与写权限如下：
+
+| origin | 含义与维护方式 |
+| --- | --- |
+| upstream | 随包真实种子或外部目录导入的原件，人工只读，只能由同来源显式更新 |
+| derived | 从一个 upstream 完整派生的人工副本，可编辑，只有一层，不做运行时继承 |
+| local | 用户自建或从示例复制的档案，可编辑 |
+| example | 本项目提供的虚构示范，人工只读，可复制为 local |
+
+`source` 记录来历，不决定写权限。人工创建不会因为写了 `source="models.dev"` 就获得自动维护资格。`entry_kind`、`managed_by` 已由 origin 替代；旧 `catalog_set_management` 会给出迁移提示。
 
 ```python
 from agentconf import CapabilityProfile
 
-# 在已打开的 config 中执行：
+# 在已打开的 config 中执行
 profile = config.catalog_create(CapabilityProfile(
-    model_key="local/my-fixed-release", display_name="我的固定模型", model_type="llm",
+    model_key="local/fixed", display_name="我的固定模型",
     max_context_length=128_000, supports_reasoning=False,
 ))
-config.update_model("chat-main", capabilities_key=profile.model_key)
-config.update_model("chat-main", capabilities_key=None)  # 清除引用，按类型补默认值
+local = config.catalog_clone("example-VLA", "local/vla")
+# 上游键需先存在，例如随包目录的真实模型
+derived = config.catalog_derive("zhipuai/glm-5.3", "local/glm-tuned")
+old = config.catalog_get(derived.model_key)
+edited = CapabilityProfile.model_validate({**old.model_dump(), "max_output_length": 64_000})
+saved = config.catalog_edit(edited, expected_revision=old.revision)
+config.update_model("chat-main", capabilities_key=saved.model_key)
 ```
 
-档案中的 `None` 表示未声明，`False` 表示明确不支持；有效默认值不会回写到档案。
-未绑定档案的 LLM 默认上下文为 1,000,000，支持工具与推理，视觉和 JSON 模式默认 False。
-档案中的 `max_output_length` 是能力上限；Agent 的 `max_tokens` 是实际请求配额，两者不会自动互相赋值。
+普通编辑只能改变展示信息、能力与说明，不能改变键、用途、origin、来源或派生关系。更新和删除检查 expected_revision，防止覆盖另一个客户端的改动。上游原件与示例不可通过普通 CRUD 删除；本地/派生档案存在引用时也不能删除。
 
-## 模型类型与虚构示例
+`catalog_references` 同时列出模型绑定和 `derived:KEY` 派生引用。Provider/模型的旧级联删除语义在当前开发阶段保持；能力档案独立保留。
 
-所有类型通过同一条解析路径生成有效能力。`asr` 统一保存为 `stt`，未知类型使用
-`GenericCapabilities`，不会获得 LLM 专属的上下文或工具默认值。
+## 派生差异与 stale
 
-| 档案键 | 类型 | 主要声明 |
-| --- | --- | --- |
-| `example-LLM` | llm | text → text，上下文 1M，输出上限 128k，工具、推理 True，视觉 False |
-| `example-VLA` | llm | text + image → text，上下文 1M，输出上限 242000，视觉、工具、推理 True |
-| `example-embedding` | embedding | text → embedding，输入上限 8192，维度 1536 |
-| `example-rerank` | rerank | text → score，输入上限 8192，top_n=10 |
-| `example-TTS` | tts | text → audio，语言 zh/en，音色未知 |
-| `example-STT` | stt | audio → text，语言 zh/en |
-| `example-imagegen` | image_gen | text → image，尺寸示范 1024x1024 |
+派生时完整复制上游声明，并保存 derived_from 和 base_fingerprint。上游后续变化不修改派生内容或模型绑定；`catalog_stale` 提示上游能力已经变化。
 
-这些档案不是实际发布模型，也不会自动成为请求名。`example-*` 是保留命名空间，
-必须同时声明 `entry_kind="example"`、`source="example"`；外部导入不能占用这些键。
-video、realtime 及其它未知类型可显式建档并通过通用能力类保留模态和 `extra`。
+```python
+variants = config.catalog_variants("zhipuai/glm-5.3")
+diff = config.catalog_diff("local/glm-tuned")
+if diff["stale"]:
+    old = config.catalog_get("local/glm-tuned")
+    # 显式确认当前上游基线；保留人工能力，不合并上游字段
+    config.catalog_rebuild(
+        old.model_key, expected_revision=old.revision,
+        expected_parent_fingerprint=diff["parent_fingerprint"],
+    )
+```
 
-`find_models_by_capability("supports_reasoning")`、`input_modality:image`、
-`output_modality:audio` 等筛选基于有效能力，对全部模型类型生效。未知筛选条件明确报错。
+能力指纹覆盖用途、显式能力与语义性 extra；不包含展示名、描述、发布日期、来源时间或 revision。说明信息单独存 annotations，已知集合能力的顺序不影响 stale，扩展数组的顺序仍保留语义。并发检查使用 revision 和完整记录快照，不能用能力指纹代替。
 
-## 显式导入外部目录
+有效能力的来源标签保留原有 source 语义：upstream 使用来源名，example 为 example，local 使用声明的来历（通常为 manual），derived 为 `derived:档案键`；未声明字段为 default。写权限只看 origin，不能从能力来源标签判断是否允许自动更新。
 
-默认来源为 [models.dev 的独立 models.json](https://models.dev/models.json)。完整规范 ID
-直接作为档案键，不聚合供应商列表、不裁剪前缀、不按请求名自动绑定。
-初始化与普通查询不访问网络，只有显式导入会下载公开数据。
+## CLI 与 TUI
+
+CLI 默认只读预览；`--apply` 才写入。编辑文件包含完整 CapabilityProfile，先通过 show 获取 profile 后修改需要的字段。
 
 ```sh
-# 默认只读预览，不创建数据库、不迁移旧库；保存这一份规范化快照
-agentconf catalog import --source models.dev --plan-out /tmp/catalog-plan.json
+agentconf catalog list --origin upstream --type llm
+agentconf catalog show zhipuai/glm-5.3 --with-variants
+agentconf catalog derive zhipuai/glm-5.3 --as local/tuned --apply
+agentconf catalog clone example-embedding --as local/embedding --apply
+agentconf catalog variants zhipuai/glm-5.3
+agentconf catalog diff local/tuned
+agentconf catalog rebuild local/tuned                       # 查看差异
+agentconf catalog rebuild local/tuned --expected-revision 1 --apply
+agentconf catalog create --file /tmp/profile.json           # 查看新增声明
+agentconf catalog create --file /tmp/profile.json --apply
+agentconf catalog edit local/tuned --file /tmp/profile.json
+agentconf catalog edit local/tuned --file /tmp/profile.json --expected-revision 2 --apply
+agentconf catalog delete local/embedding                    # 查看引用
+agentconf catalog delete local/embedding --expected-revision 1 --apply
+```
 
-# 接受同一快照中所选的新增项，不再次下载
-agentconf catalog import --plan /tmp/catalog-plan.json --apply zhipuai/glm-5.3
+revision 只是示例，应用时必须使用自己的预览值。TUI 的能力目录支持来源筛选、查看原始声明/派生差异、派生/复制、完整编辑、基线重建、键搬迁、删除预览、导入和升级。原件只读；取消操作不写入。旧库显示迁移帮助与只读检查入口，不自动改表。
 
-# 接受同一快照中的所有新增 LLM 与 embedding
-agentconf catalog import --plan /tmp/catalog-plan.json --apply-all --types llm,embedding
+## 显式导入与手动升级
 
-agentconf catalog list --kind example
-agentconf catalog list --kind model --type embedding
-agentconf catalog show example-VLA
+来源为 [models.dev 的独立 models.json](https://models.dev/models.json)，完整规范 ID 作为键，不聚合供应商记录、不裁剪前缀。初始化和解析不联网，只有显式下载入口取公开目录。
+
+```sh
+# 只新增，不覆盖已有差异；保存完整规范化快照
+agentconf catalog import --source models.dev --plan-out /tmp/import.json
+agentconf catalog import --plan /tmp/import.json --apply-all --types llm,embedding
+# 查看上游差异，不写库
 agentconf catalog diff --source models.dev
+# 同来源 upstream 的增量更新；local/derived/example 受保护
+agentconf catalog update --source models.dev --plan-out /tmp/update.json
+agentconf catalog update --plan /tmp/update.json --apply-all
+# 或 --apply KEY1 KEY2 只接受部分新增/可更新项
 ```
 
-只有预览中属于“新增”的键可接受。已有相同内容直接跳过，不修改更新时间；已有差异
-只报告并保留本地内容，上游缺项也保留。一次批量写入是原子的；若预览后有其它客户端
-创建同一键，相同内容跳过，不同内容则整批回滚。人工档案、示例与人工修订都不会被导入覆盖。
+SDK 对应 catalog_preview/catalog_apply 与 catalog_update_preview/catalog_update_apply。apply 使用已预览的快照，不重新下载。用途/来源变化视为冲突；上游缺项保留，不自动删除。预览后内容、来源或引用发生变化，整批回滚。相同更新重复应用不改时间。旧规范化版本的计划拒绝，须重新预览。
 
-快照保存来源 URL、原始 SHA256、规范化版本及完整声明。`--dry-run` 明确指定只读预览，
-不能与应用参数同时使用。首次通过应用命令创建新库时仍会执行正常的离线种子初始化。
-只读命令遇到旧库会要求先显式打开 SDK 或 TUI 完成迁移，不会自行升级旧库。
+### 人工占用上游规范键
 
-SDK 的对应操作为：
-
-```python
-plan = config.catalog_preview()              # 显式下载和预览
-plan.save("/tmp/catalog-plan.json")
-# plan.added / changed / unchanged / missing / differences
-result = config.catalog_apply(plan, keys=plan.added[:2])
-# 或 types=["llm", "embedding"] 限定所选新增项的类型
-```
-
-## 人工纠错和引用保护
-
-档案键、模型类型、档案种类创建后不可修改；要改变它们，应新建档案并重新绑定。
-显示名称、能力及来源可以显式纠错。编辑需要当前修订指纹，防止覆盖其它客户端的修改：
-
-```python
-from agentconf.catalog import revision
-
-old = config.catalog_get("local/my-fixed-release")
-references = config.catalog_references(old.model_key)  # 查看受影响的绑定
-values = old.model_dump()
-values.update(max_context_length=256_000, source="manual", source_ref=None)
-corrected = CapabilityProfile.model_validate(values)
-config.catalog_edit(corrected, expected_revision=revision(old))
-```
-
-CLI 可先从 `catalog show KEY` 获取完整 `profile` JSON 与修订指纹，修改后保存到文件：
+旧人工档案占用规范键时，默认报告冲突。可以显式搬迁，保留人工声明并把原模型引用一起迁往 local/ 新键：
 
 ```sh
-agentconf catalog edit local/my-fixed-release --file /tmp/profile.json
-# 核对 old/new、references 和 revision 后，再明确应用同一文件
-agentconf catalog edit local/my-fixed-release --file /tmp/profile.json \
-  --expected-revision PREVIEW_REVISION --apply
-
-agentconf catalog create --file /tmp/new-profile.json      # 默认预览
-agentconf catalog create --file /tmp/new-profile.json --apply
-agentconf catalog delete local/my-fixed-release           # 默认查看引用影响
-agentconf catalog delete local/my-fixed-release --apply
+agentconf catalog relocate vendor/model --as local/original
+agentconf catalog relocate vendor/model --as local/original --expected-revision 1 --apply
 ```
 
-被绑定引用的档案禁止删除。删除 Provider 会级联删除其模型绑定和 Agent；删除绑定会
-级联删除其 Agent，能力档案独立保留。TUI 对级联删除要求确认。
-
-## 从 0.1 升级与回滚
-
-0.2 是破坏性配置接口变更。升级前停止其它配置写入者，再显式打开 SDK 或 TUI。
-运行时仍用旧版库时不要让新旧 SDK 同时维护同一份配置。
-
-升级按 `PRAGMA user_version` 执行 0 → 2：
-
-1. 在任何 schema 改动之前预检，拒绝所有非 SQL NULL 的模型覆盖列，包括空串和 `"{}"`；拒绝跨 Provider 重名绑定。错误列出绑定 ID、名称和列名，不打印覆盖值。
-2. 获取写锁后复检，用 SQLite `Connection.backup()` 创建同目录一致性备份，包含 WAL 中已提交的数据。
-3. 在一个事务中重建 Provider 与模型绑定表，保留 ID、时间、Agent 引用和采样参数；旧绑定的档案键保持 NULL，不猜测对应档案。
-4. 初始化种子，删除旧 metadata 缓存表，校验配置可解析、行数和外键后提交版本。任一步失败整体回滚。
-
-历史重命名留下的空 `llm_instances` 表可安全移除；该表仍有记录、自定义表/列/索引/
-触发器或不支持的 schema 版本时会拒绝自动升级，要求先人工处理。
-
-迁移备份命名为 `config.db.backup-时间-随机标识`，它包含密钥，按个人配置保管。回滚时
-先停止所有配置读取和写入进程，用旧版 SDK 打开备份的副本，或用 SQLite 备份 API 恢复到
-一个新路径并让旧版应用指向该路径。不要在运行中的库上直接覆盖主文件，也不要仅复制 WAL 主文件。
-
-以下旧接口已删除：模型级连接/能力覆盖、`metadata_provider`、`metadata_model`、
-`refresh_metadata()`、元数据缓存查询 API、`metadata_*` 构造参数，以及
-`--refresh-metadata`、`--metadata-status`、`--offline`。传入旧字段会明确报错。
-
-## 开发与数据维护
+也可把搬迁与导入放入同一个冻结计划、同一事务。先保存映射文件，例如 `{"vendor/model":"local/original"}`：
 
 ```sh
-uv sync
+agentconf catalog import --relocations /tmp/relocations.json --plan-out /tmp/import.json
+agentconf catalog import --plan /tmp/import.json --apply-all
+```
+
+SDK 用 `catalog_preview(snapshot, relocations={...})` 或 `catalog_update_preview(snapshot, relocations={...})`。若原声明/引用/目标键在预览后变化，搬迁和导入一起回滚；原模型不能静默改指上游声明。
+
+## 虚构示例与能力筛选
+
+| 键 | 用途 | 主要声明 |
+| --- | --- | --- |
+| example-LLM | llm | text→text，上下文 1M，输出 128k，工具/推理支持 |
+| example-VLA | llm | text+image→text，上下文 1M，输出 242000，工具/推理/视觉支持 |
+| example-embedding | embedding | text→embedding，输入 8192，维度 1536 |
+| example-rerank | rerank | text→score，输入 8192，top_n=10 |
+| example-TTS | tts | text→audio，语言 zh/en |
+| example-STT | stt | audio→text，语言 zh/en |
+| example-imagegen | image_gen | text→image，尺寸 1024x1024 |
+
+example-* 为保留键，origin/source 均为 example，不能由外部目录导入。它们不是实际模型，不自动作为请求名。`find_models_by_capability("supports_reasoning")`、`input_modality:image`、`output_modality:audio` 按有效能力筛选，未知条件报错。
+
+## 旧库迁移与回滚
+
+当前 schema 4，已有 0/2/3 库采用显式迁移；schema 4 是开发阶段，不要求用户单独部署。先停止其它配置写者，在备份副本演练：
+
+```sh
+agentconf migrate prepare --db-path /path/config.db --plan-out /tmp/migration.json
+agentconf migrate apply --plan /tmp/migration.json
+```
+
+SDK 对应 prepare_migration/apply_migration，MigrationPlan 可 save/load。prepare 只读并冻结库路径、内容/结构摘要与版本，普通构造器对旧库报 MigrationRequiredError。apply 锁内重验，先用 SQLite backup 做包含 WAL 已提交内容的一致备份，再在一个事务转换；失败回滚，外键开关在事务外恢复。备份文件权限为 0600，包含密钥，不提交版本库。
+
+旧库迁移保留 ID、时间、绑定、Agent 引用与参数，不猜能力引用、不重新灌 seed：
+
+- schema 3：example 按旧种类识别；合法 managed_by 可证明的行迁 upstream，其余迁 local。
+- schema 2：无法证明旧行是否被人工改过，真实行全部保守迁 local。
+- schema 0：先拒绝任何非 NULL 的旧覆盖/映射字段，包含空串/{}；拒绝重名绑定、未知结构、非空历史 llm_instances。不能静默清空旧值。
+
+未来版本、自定义结构、外键损坏拒绝处理。旧 metadata 缓存只在旧字段预检通过后移除。迁移不把内容相同当成来源证明，不伪造派生关系。库变动后旧计划失效，须重新 prepare。
+
+回滚需停用写者并恢复匹配旧 SDK 的备份副本；不要覆盖运行中的主文件，也不要只复制 WAL 主文件。迁移备份路径会返回给调用方。
+
+## 开发验证
+
+```sh
 uv run pytest -q
 uv run ruff check src tests scripts
 uv build
 ```
 
-种子的来源、许可与可复现生成命令见 [随包能力种子](src/agentconf/data/README.md)。
-真实模型数据使用 models.dev 的 MIT 许可；本项目代码与虚构示例使用 Apache-2.0。
+来源、许可和固定快照重建命令见 [随包能力种子](src/agentconf/data/README.md)。真实模型数据使用 models.dev 的 MIT 许可，代码与虚构示例使用 Apache-2.0。

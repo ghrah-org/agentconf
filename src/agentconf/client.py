@@ -9,6 +9,8 @@ from agentconf.catalog import (
     CatalogSnapshot,
     CatalogSource,
     ImportPlan,
+    UpdatePlan,
+    prepare_update,
     ModelsDevSource,
     prepare_import,
 )
@@ -47,7 +49,7 @@ def _check_fields(values: dict, allowed: set[str]) -> None:
 
 
 class AgentsConfig:
-    """打开配置库，仅首次初始化或升级时写入随包种子；初始化不访问网络。"""
+    """新库离线初始化并灌种子一次，已有旧库须显式迁移。"""
 
     DEFAULT_DB_PATH = "~/.agentconf/config.db"
 
@@ -69,9 +71,9 @@ class AgentsConfig:
         self.close()
 
     def catalog_list(
-        self, *, model_type: str | None = None, entry_kind: str | None = None
+        self, *, model_type: str | None = None, origin: str | None = None
     ) -> list[CapabilityProfile]:
-        return self._catalog_repo.list(model_type=model_type, entry_kind=entry_kind)
+        return self._catalog_repo.list(model_type=model_type, origin=origin)
 
     def catalog_get(self, key: str) -> CapabilityProfile:
         return self._catalog_repo.get(key)
@@ -83,22 +85,96 @@ class AgentsConfig:
         return self._catalog_repo.references(key)
 
     def catalog_edit(
-        self, profile: CapabilityProfile, *, expected_revision: str
+        self, profile: CapabilityProfile, *, expected_revision: int
     ) -> CapabilityProfile:
         return self._catalog_repo.edit(profile, expected_revision=expected_revision)
 
-    def catalog_delete(self, key: str) -> None:
-        self._catalog_repo.delete(key)
+    def catalog_delete(self, key: str, *, expected_revision: int) -> None:
+        self._catalog_repo.delete(key, expected_revision=expected_revision)
+
+    def catalog_derive(
+        self,
+        parent_key: str,
+        key: str,
+        *,
+        display_name: str | None = None,
+        expected_revision: int | None = None,
+    ) -> CapabilityProfile:
+        return self._catalog_repo.derive(
+            parent_key,
+            key,
+            display_name=display_name,
+            expected_revision=expected_revision,
+        )
+
+    def catalog_clone(
+        self,
+        source_key: str,
+        key: str,
+        *,
+        display_name: str | None = None,
+        expected_revision: int | None = None,
+    ) -> CapabilityProfile:
+        return self._catalog_repo.clone(
+            source_key,
+            key,
+            display_name=display_name,
+            expected_revision=expected_revision,
+        )
+
+    def catalog_variants(self, key: str) -> list[CapabilityProfile]:
+        return self._catalog_repo.variants(key)
+
+    def catalog_stale(self, key: str) -> bool:
+        return self._catalog_repo.stale(key)
+
+    def catalog_diff(self, key: str) -> dict:
+        return self._catalog_repo.diff(key)
+
+    def catalog_rebuild(
+        self,
+        key: str,
+        *,
+        expected_revision: int,
+        expected_parent_fingerprint: str | None = None,
+    ) -> CapabilityProfile:
+        return self._catalog_repo.rebuild(
+            key,
+            expected_revision=expected_revision,
+            expected_parent_fingerprint=expected_parent_fingerprint,
+        )
+
+    def catalog_relocate(
+        self,
+        key: str,
+        new_key: str,
+        *,
+        expected_revision: int,
+        expected_references: list[str] | None = None,
+    ) -> CapabilityProfile:
+        return self._catalog_repo.relocate(
+            key,
+            new_key,
+            expected_revision=expected_revision,
+            expected_references=expected_references,
+        )
 
     def catalog_preview(
-        self, source: CatalogSource | CatalogSnapshot | None = None
+        self,
+        source: CatalogSource | CatalogSnapshot | None = None,
+        *,
+        relocations: dict[str, str] | None = None,
     ) -> ImportPlan:
         snapshot = (
             source
             if isinstance(source, CatalogSnapshot)
             else (source or ModelsDevSource()).fetch()
         )
-        return prepare_import(snapshot, self.catalog_list())
+        return prepare_import(
+            snapshot,
+            self.catalog_list(),
+            relocations=self._catalog_repo.prepare_relocations(relocations),
+        )
 
     def catalog_apply(
         self,
@@ -108,6 +184,43 @@ class AgentsConfig:
         types: list[str] | None = None,
     ) -> dict:
         return self._catalog_repo.apply(plan, keys, types=types)
+
+    def catalog_update_preview(
+        self,
+        source: CatalogSource | CatalogSnapshot | None = None,
+        *,
+        relocations: dict[str, str] | None = None,
+    ) -> UpdatePlan:
+        """显式下载最新版目录，预览新增、托管更新、人工保护和冲突。"""
+        snapshot = (
+            source
+            if isinstance(source, CatalogSnapshot)
+            else (source or ModelsDevSource()).fetch()
+        )
+        plan = prepare_update(
+            snapshot,
+            self.catalog_list(),
+            relocations=self._catalog_repo.prepare_relocations(relocations),
+        )
+        plan.references = {key: self.catalog_references(key) for key in plan.updatable}
+        plan.reference_fingerprints = {
+            key: self._catalog_repo.reference_fingerprint(key) for key in plan.updatable
+        }
+        return plan
+
+    def catalog_update_apply(
+        self,
+        plan: UpdatePlan,
+        keys: list[str] | None = None,
+        *,
+        types: list[str] | None = None,
+    ) -> dict:
+        """应用已预览快照，仅新增和更新由同来源维护的档案。"""
+        return self._catalog_repo.apply_update(plan, keys, types=types)
+
+    def catalog_set_management(self, *args, **kwargs) -> CapabilityProfile:
+        """0.2 维护权交接入口；0.3 由 origin/derive/clone 取代。"""
+        return self._catalog_repo.set_management(*args, **kwargs)
 
     def create_provider(
         self, name: str, provider_type: ProviderType | str, base_url: str, api_key: str

@@ -83,7 +83,7 @@ class ModelCreateDialog(DialogScreen):
         select.set_options(
             [
                 (
-                    f"{'[示例] ' if p.entry_kind == 'example' else ''}{p.display_name} ({p.model_key})",
+                    f"{'[示例] ' if p.origin == 'example' else ''}{p.display_name} ({p.model_key})",
                     p.model_key,
                 )
                 for p in profiles

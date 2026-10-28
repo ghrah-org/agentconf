@@ -104,6 +104,7 @@ def main() -> None:
         CapabilityProfile.model_validate(
             {
                 **p.model_dump(),
+                "origin": "upstream",
                 "source_fetched_at": at,
                 "created_at": at,
                 "updated_at": at,
@@ -116,7 +117,7 @@ def main() -> None:
             model_key=key,
             display_name=key,
             model_type=typ,
-            entry_kind="example",
+            origin="example",
             source="example",
             created_at=at,
             updated_at=at,
@@ -125,8 +126,8 @@ def main() -> None:
         for key, typ, caps in EXAMPLES
     )
     seed = dict(
-        schema_version=2,
-        seed_version=1,
+        schema_version=4,
+        seed_version=3,
         generated_at=at.isoformat(),
         normalizer_version=snapshot.normalizer_version,
         source_url=snapshot.source_url,

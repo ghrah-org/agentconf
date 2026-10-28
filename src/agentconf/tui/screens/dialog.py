@@ -73,9 +73,7 @@ class DialogScreen(ModalScreen[None]):
             with Horizontal(id="dialog-buttons"):
                 if self._cancel_text:
                     yield Button(self._cancel_text, variant="default", id="btn-cancel")
-                yield Button(
-                    self._confirm_text, variant="primary", id="btn-confirm"
-                )
+                yield Button(self._confirm_text, variant="primary", id="btn-confirm")
             with VerticalScroll(id="dialog-body"):
                 yield from self.compose_body()
 
@@ -102,7 +100,8 @@ class DialogScreen(ModalScreen[None]):
 
         existing = self.query("#dialog-error")
         for w in existing:
-            w.remove()
+            w.update(message)
+            return
         error = Static(message, id="dialog-error", classes="error-toast")
         dialog = self.query_one("#dialog", Vertical)
         dialog.mount(error)

@@ -22,6 +22,18 @@ class CatalogImportError(CatalogError):
     """导入快照下载、校验或应用失败。"""
 
 
+class CatalogReadOnlyError(CatalogError):
+    """来源原件只读，应创建派生或本地副本。"""
+
+
+class CatalogConflictError(CatalogError):
+    """预览后的数据或引用发生变化。"""
+
+
+class MigrationRequiredError(MigrationError):
+    """旧库必须先 prepare/apply 显式升级。"""
+
+
 class CapabilityNotFoundError(CatalogError):
     """能力档案未找到。"""
 

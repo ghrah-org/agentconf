@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""能力档案的原始声明与只读有效投影。"""
+"""能力档案的原始声明、来源谱系与只读有效投影。"""
 
 from __future__ import annotations
 
@@ -43,6 +43,23 @@ JSON_FIELDS = (
     "extra",
 )
 CAPABILITY_FIELDS = SCALAR_FIELDS + JSON_FIELDS
+LIST_CAPABILITY_FIELDS = (
+    "input_modalities",
+    "output_modalities",
+    "languages",
+    "voices",
+    "supported_sizes",
+)
+KNOWN_ANNOTATION_FIELDS = ("description", "release_date", "last_updated")
+
+Origin = Literal["upstream", "derived", "local", "example"]
+"""能力档案来源类型。
+
+- upstream: 随包 seed 或同来源导入器维护，普通 CRUD 只读；
+- derived: 用户从某个 upstream 完整复制出的派生档案，只有一层；
+- local: 用户自建或由 example 复制，普通 CRUD 可维护；
+- example: 随包虚构示例，只读。
+"""
 
 
 def normalize_model_type(value: str) -> str:
@@ -53,12 +70,23 @@ def normalize_model_type(value: str) -> str:
     return "stt" if value == "asr" else value
 
 
+def _canonical_json_value(value: Any) -> Any:
+    """递归排序 JSON 对象键，保证指纹与落库形状稳定。"""
+    if isinstance(value, dict):
+        return {
+            key: _canonical_json_value(value[key]) for key in sorted(value, key=str)
+        }
+    if isinstance(value, list):
+        return [_canonical_json_value(item) for item in value]
+    return value
+
+
 class CapabilityProfile(BaseModel):
     """完整能力声明；None 为未声明，默认值只在投影时补齐。"""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
     model_key: str = Field(min_length=1)
-    entry_kind: Literal["model", "example"] = "model"
+    origin: Origin = "local"
     display_name: str = Field(min_length=1)
     family: str | None = None
     model_type: str = "llm"
@@ -78,21 +106,65 @@ class CapabilityProfile(BaseModel):
     voices: list[str] | None = None
     supported_sizes: list[str] | None = None
     extra: dict[str, Any] | None = None
+    annotations: dict[str, Any] | None = None
     source: str = Field(default="manual", min_length=1)
     source_ref: str | None = None
     source_fetched_at: datetime | None = None
+    derived_from: str | None = Field(None, min_length=1)
+    base_fingerprint: str | None = Field(None, pattern=r"^[a-f0-9]{64}$")
+    revision: StrictInt = Field(1, gt=0)
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
     _normalize_type = field_validator("model_type", mode="before")(normalize_model_type)
 
+    @model_validator(mode="before")
+    @classmethod
+    def canonicalize_input(cls, data: Any) -> Any:
+        """把说明字段移入 annotations，并规范化集合与 JSON 键序。"""
+        if not isinstance(data, dict):
+            return data
+        values = dict(data)
+        annotations = dict(values.get("annotations") or {})
+        if isinstance(values.get("extra"), dict):
+            extra = dict(values["extra"])
+            explicit_empty = not extra
+            for key in KNOWN_ANNOTATION_FIELDS:
+                if key in extra:
+                    if key in annotations and annotations[key] != extra[key]:
+                        raise ValueError(f"说明字段重复且不一致: {key}")
+                    annotations.setdefault(key, extra.pop(key))
+            extra = _canonical_json_value(extra)
+            values["extra"] = extra if extra or explicit_empty else None
+        if annotations:
+            values["annotations"] = _canonical_json_value(annotations)
+        elif "annotations" in values:
+            values["annotations"] = None
+        return values
+
     @model_validator(mode="after")
     def validate_declaration(self) -> CapabilityProfile:
-        """隔离示例命名空间，拒绝错类型字段与重复声明。"""
-        if (self.entry_kind == "example") != self.model_key.startswith("example-"):
-            raise ValueError("example-* 为示例保留键，必须与 entry_kind=example 一致")
-        if (self.entry_kind == "example") != (self.source == "example"):
+        """隔离示例命名空间，校验来源谱系与能力字段归属。"""
+        is_example = self.origin == "example"
+        if is_example != self.model_key.startswith("example-"):
+            raise ValueError("example-* 为示例保留键，必须与 origin=example 一致")
+        if is_example != (self.source == "example"):
             raise ValueError("示例来源必须为 example，真实模型不能使用此来源")
+        if not is_example and self.source == "example":
+            raise ValueError("只有 example 档案可以使用 example 来源")
+        if self.origin == "derived":
+            if not self.derived_from or not self.base_fingerprint:
+                raise ValueError("derived 档案必须记录父档案与基线指纹")
+            if self.derived_from == self.model_key:
+                raise ValueError("派生档案不能以自身为父档案")
+            if self.source in {"manual", "example"}:
+                raise ValueError("派生档案必须保留上游来源")
+        elif self.derived_from is not None or self.base_fingerprint is not None:
+            raise ValueError("只有 derived 档案可以记录父档案与基线指纹")
+        if self.origin == "upstream" and self.source in {"manual", "example"}:
+            raise ValueError("upstream 档案必须来自外部来源")
+        if self.annotations and set(self.annotations) & set(CAPABILITY_FIELDS):
+            raise ValueError("annotations 不得重复声明能力字段")
         allowed = get_capabilities_class(self.model_type).model_fields
         invalid = [
             key
@@ -119,8 +191,9 @@ class CapabilityProfile(BaseModel):
         values = self.declaration()
         cls = get_capabilities_class(self.model_type)
         caps = cls.model_validate(values)
+        label = f"derived:{self.model_key}" if self.origin == "derived" else self.source
         return caps, {
-            key: self.source if key in values else "default"
+            key: label if key in values else "default"
             for key in cls.model_fields
             if key != "capabilities_type"
         }

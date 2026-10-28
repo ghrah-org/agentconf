@@ -2,7 +2,7 @@
 
 agentconf 是一个静态配置 SDK：保存模型连接、请求模型标识、模型能力目录与 MCP Server 连接，并分别解析模型端点和 MCP。它基于 Pydantic 与 SQLite，不发送模型请求、不连接 MCP、不规定 Agent 的组合或授权方式。
 
-当前版本 **0.3.0a1** 是候选版本，数据库 schema 5。模型接口与旧 Agent 聚合 API 已发生破坏性变化；消费者须配套迁移，不能直接替换仍调用 resolve_agent 的运行环境。
+当前版本 **0.3.0**，数据库 schema 5。模型接口与旧 Agent 聚合 API 已发生破坏性变化；消费者须配套迁移，不能直接替换仍调用 resolve_agent 的运行环境。
 
 ## 安装和打开
 
@@ -210,6 +210,8 @@ agentconf migrate prepare --db-path /path/config.db --plan-out /tmp/migration.js
 agentconf migrate prepare --db-path /path/config.db --formats /tmp/formats.json --plan-out /tmp/migration.json
 agentconf migrate apply --plan /tmp/migration.json
 ```
+
+schema 5 也会先验证真实表结构和数据；发现多余旧表或损坏字段时明确报错，不会仅根据版本号报告“无需迁移”。旧 SDK 0.1.0 会在打开新版库时重新创建旧表，切换前必须统一全部配置写者的 SDK。
 
 prepare 只读，冻结源路径、版本、完整摘要、接口格式、能力键搬迁和 Agent→端点映射，不包含采样参数值/凭据。已知旧 LLM 格式为 openai→Chat Completions、anthropic→Messages、deepseek→Chat Completions。其它不猜测，unresolved 非空不能 apply。可用 --relocations 指定 local 能力键搬迁映射。
 

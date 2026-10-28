@@ -66,7 +66,7 @@ from agentconf.exceptions import (
     LegacyAPIError,
 )
 
-__version__ = "0.3.0a1"
+__version__ = "0.3.0"
 __all__ = [
     "AgentsConfig",
     "CatalogSnapshot",

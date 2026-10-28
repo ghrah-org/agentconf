@@ -168,6 +168,10 @@ def prepare_migration(
         conn.execute("BEGIN")
         version = conn.execute("PRAGMA user_version").fetchone()[0]
         if version == 5:
+            current = Database(path)
+            current._connection = conn
+            current._preflight()
+            current._validate_rows()
             raise MigrationError("数据库已经是 schema 5，无需迁移")
         db = LegacyDatabase(path)
         db._connection = conn

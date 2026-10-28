@@ -241,3 +241,45 @@ def test_custom_schema_objects_rejected_before_any_artifact(tmp_path, version):
         prepare_migration(path)
     assert path.read_bytes() == before
     assert not list(tmp_path.glob("*.backup-*"))
+
+
+@pytest.mark.parametrize("extra", ["agents", "model_instances", "providers_new"])
+def test_prepare_latest_schema_reports_legacy_table_pollution(tmp_path, extra):
+    path = tmp_path / "config.db"
+    with AgentsConfig(path):
+        pass
+    with sqlite3.connect(path) as conn:
+        conn.execute(f'CREATE TABLE "{extra}" (id TEXT PRIMARY KEY)')
+    before = path.read_bytes()
+    with pytest.raises(MigrationError, match=f"unexpected_tables=.*{extra}"):
+        prepare_migration(path)
+    with pytest.raises(MigrationError, match="表结构不一致"):
+        AgentsConfig(path, read_only=True)
+    assert path.read_bytes() == before
+
+
+def test_prepare_latest_schema_validates_columns_and_rows_before_noop(tmp_path):
+    path = tmp_path / "config.db"
+    with AgentsConfig(path):
+        pass
+    with pytest.raises(MigrationError, match="已经是 schema 5"):
+        prepare_migration(path)
+    with sqlite3.connect(path) as conn:
+        conn.execute("ALTER TABLE providers ADD COLUMN unexpected TEXT")
+    before = path.read_bytes()
+    with pytest.raises(MigrationError, match="column_differences=.*unexpected"):
+        prepare_migration(path)
+    assert path.read_bytes() == before
+
+
+def test_prepare_latest_schema_checks_broken_foreign_keys(tmp_path):
+    path = tmp_path / "invalid.db"
+    with AgentsConfig(path) as cfg:
+        cfg.create_provider("p", "openai", "https://example.invalid", "TEST_ONLY")
+        cfg.create_model_endpoint("p", "e", "m", "openai.chat_completions")
+    with sqlite3.connect(path) as conn:
+        conn.execute("DELETE FROM providers")
+    before = path.read_bytes()
+    with pytest.raises(MigrationError, match="外键"):
+        prepare_migration(path)
+    assert path.read_bytes() == before

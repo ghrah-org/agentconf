@@ -55,10 +55,21 @@ class Database(LegacyDatabase):
                 | {"settings_json"},
                 "model_capabilities": set(PROFILE_COLUMNS),
             }
-            if tables != expected or any(
-                self._columns(table) != cols for table, cols in columns.items()
-            ):
-                raise MigrationError("schema 版本与表结构不一致")
+            differences = {
+                table: {
+                    "missing": sorted(cols - self._columns(table)),
+                    "unexpected": sorted(self._columns(table) - cols),
+                }
+                for table, cols in columns.items()
+                if table in tables and self._columns(table) != cols
+            }
+            if tables != expected or differences:
+                raise MigrationError(
+                    "schema 版本与表结构不一致: "
+                    f"missing_tables={sorted(expected - tables)}, "
+                    f"unexpected_tables={sorted(tables - expected)}, "
+                    f"column_differences={differences}"
+                )
             return False
         legacy = LegacyDatabase(self.db_path)
         legacy._connection = self.conn

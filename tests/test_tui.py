@@ -2,7 +2,7 @@
 
 import asyncio
 import json
-from textual.widgets import Input, TextArea, Select, TabbedContent, DataTable
+from textual.widgets import Button, Input, TextArea, Select, TabbedContent, DataTable
 from agentconf.tui.app import agentconfApp
 from agentconf.tui.screens.resource_screens import ResourceEditDialog
 from agentconf.tui.screens.catalog_screens import ProfileEditDialog
@@ -209,3 +209,55 @@ def test_catalog_stays_available_and_old_library_has_migration_help(tmp_path):
 
     run_ui(help_page())
     assert old.read_bytes() == before
+
+
+def test_action_bars_are_compact_and_fit_common_widths(tmp_path):
+    async def scenario():
+        for width in (80, 120):
+            app = agentconfApp(str(tmp_path / f"layout-{width}.db"))
+            async with app.run_test(size=(width, 40)) as pilot:
+                await pilot.pause()
+                app.query_one(TabbedContent).active = "tab-catalog"
+                await pilot.pause()
+                catalog = app.query_one("#catalog-table").parent
+                assert catalog.query_one(".action-bar").region.height == 6
+                assert len(catalog.query(".action-row")) == 2
+                catalog_buttons = list(catalog.query(Button))
+                assert len(catalog_buttons) == 9
+                assert all(
+                    button.region.x + button.region.width <= width
+                    for button in catalog_buttons
+                )
+                labels = {
+                    str(button.label): button.region.width for button in catalog_buttons
+                }
+                assert labels["查看"] == 8
+                assert max(labels.values()) <= 15
+
+                app.query_one(TabbedContent).active = "tab-provider"
+                await pilot.pause()
+                provider = app.query_one("#provider-table").parent
+                assert provider.query_one(".action-bar").region.height == 3
+                assert len(provider.query(".action-row")) == 1
+                assert len(list(provider.query(Button))) == 4
+
+                app.query_one(TabbedContent).active = "tab-endpoint"
+                await pilot.pause()
+                endpoint = app.query_one("#endpoint-table").parent
+                assert endpoint.query_one(".action-bar").region.height == 3
+                endpoint_buttons = list(endpoint.query(Button))
+                assert len(endpoint_buttons) == 5
+                assert all(button.region.width < 16 for button in endpoint_buttons)
+                assert all(
+                    button.region.x + button.region.width <= width
+                    for button in endpoint_buttons
+                )
+
+                app.push_screen(ResourceEditDialog("provider"))
+                await pilot.pause()
+                assert app.screen.query_one("#btn-cancel").region.width == 10
+                assert app.screen.query_one("#btn-confirm").region.width >= 10
+                await pilot.press("escape")
+                await pilot.pause()
+
+    run_ui(scenario())

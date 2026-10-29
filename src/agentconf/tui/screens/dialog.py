@@ -49,6 +49,7 @@ class DialogScreen(ModalScreen[None]):
         align: center middle;
     }
     #dialog-buttons Button {
+        min-width: 10;
         margin: 0 1;
     }
     """

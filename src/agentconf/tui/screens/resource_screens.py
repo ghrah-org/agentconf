@@ -327,16 +327,17 @@ class ResourceScreen(Container):
     def compose(self) -> ComposeResult:
         yield Input(placeholder="按名称筛选", id=self.domain + "-filter")
         yield DataTable(id=self.domain + "-table", cursor_type="row")
-        with Horizontal(classes="resource-actions"):
-            for action, label in [
-                ("view", "查看"),
-                ("create", "新建"),
-                ("edit", "编辑"),
-                ("delete", "删除"),
-            ]:
-                yield Button(label, id=self.domain + "-" + action)
-            if self.domain != "provider":
-                yield Button("解析预览", id=self.domain + "-resolve")
+        with Vertical(classes="action-bar"):
+            with Horizontal(classes="action-row"):
+                for action, label in [
+                    ("view", "查看"),
+                    ("create", "新建"),
+                    ("edit", "编辑"),
+                    ("delete", "删除"),
+                ]:
+                    yield Button(label, id=self.domain + "-" + action)
+                if self.domain != "provider":
+                    yield Button("解析预览", id=self.domain + "-resolve")
 
     def on_mount(self):
         self.query_one(DataTable).add_columns(

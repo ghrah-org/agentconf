@@ -7,7 +7,7 @@ import json
 
 from textual import work
 from textual.app import ComposeResult
-from textual.containers import Container, Horizontal
+from textual.containers import Container, Horizontal, Vertical
 from textual.widgets import Button, DataTable, Input, Label, Select, TextArea
 
 from agentconf import AgentsConfigError, CapabilityProfile, ModelsDevSource
@@ -309,17 +309,18 @@ class CatalogScreen(Container):
         )
         yield Input(placeholder="按档案键、名称或类型筛选", id="catalog-filter")
         yield DataTable(id="catalog-table", cursor_type="row")
-        with Horizontal(classes="action-bar"):
-            yield Button("查看", id="catalog-view")
-            yield Button("新建", id="catalog-create")
-            yield Button("纠错", id="catalog-edit")
-            yield Button("删除", id="catalog-delete", variant="error")
-            yield Button("派生/复制", id="catalog-copy")
-            yield Button("仅新增", id="catalog-import")
-            yield Button("手动升级", id="catalog-update", variant="primary")
-
-            yield Button("重建派生基线", id="catalog-rebuild")
-            yield Button("搬迁人工键", id="catalog-relocate")
+        with Vertical(classes="action-bar"):
+            with Horizontal(classes="action-row"):
+                yield Button("查看", id="catalog-view")
+                yield Button("新建", id="catalog-create")
+                yield Button("纠错", id="catalog-edit")
+                yield Button("删除", id="catalog-delete", variant="error")
+            with Horizontal(classes="action-row"):
+                yield Button("派生/复制", id="catalog-copy")
+                yield Button("仅新增", id="catalog-import")
+                yield Button("手动升级", id="catalog-update", variant="primary")
+                yield Button("重建派生基线", id="catalog-rebuild")
+                yield Button("搬迁人工键", id="catalog-relocate")
 
     def on_mount(self) -> None:
         self.query_one("#catalog-table", DataTable).add_columns(

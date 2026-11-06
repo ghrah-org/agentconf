@@ -134,7 +134,7 @@ class CatalogRepository:
             return []
         with closing(sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)) as conn:
             conn.row_factory = sqlite3.Row
-            if conn.execute("PRAGMA user_version").fetchone()[0] not in {2, 3, 4, 5}:
+            if conn.execute("PRAGMA user_version").fetchone()[0] not in {2, 3, 4, 5, 6}:
                 raise MigrationError(
                     "目录预览不迁移旧库；请使用 migrate prepare/apply 显式升级"
                 )

@@ -2,6 +2,7 @@
 """具名模型端点、能力目录及独立 MCP 的配置 SDK。"""
 
 from __future__ import annotations
+import json
 from contextlib import contextmanager
 from pathlib import Path
 from agentconf.catalog import (
@@ -66,6 +67,7 @@ class AgentsConfig:
         self._provider_repo = ResourceRepository(conn, "providers")
         self._endpoint_repo = ResourceRepository(conn, "model_endpoints")
         self._mcp_repo = ResourceRepository(conn, "mcp_servers")
+        self._mcp_provider_repo = ResourceRepository(conn, "mcp_providers")
         self._catalog_repo = CatalogRepository(conn)
 
     def close(self) -> None:
@@ -350,9 +352,68 @@ class AgentsConfig:
     ):
         return self._endpoint_repo.delete(name, expected_revision, expected_id)
 
-    def create_mcp_server(self, name, transport, settings):
+    def create_mcp_provider(
+        self, name, *, vendor=None, api_key=None, default_binding=None
+    ):
+        """创建可供多台 MCP 服务共享的认证身份。"""
+        return self._mcp_provider_repo.create(
+            dict(
+                name=name,
+                vendor=vendor,
+                api_key=api_key,
+                default_binding=default_binding,
+            )
+        )
+
+    def get_mcp_provider(self, name):
+        """按可读名称取 MCP 认证身份。"""
+        return self._mcp_provider_repo.get(name)
+
+    def get_mcp_provider_by_id(self, provider_id):
+        """按稳定 ID 取 MCP 认证身份。"""
+        return self._mcp_provider_repo.get_by_id(provider_id)
+
+    def list_mcp_providers(self):
+        """列出独立的 MCP 认证身份。"""
+        return self._mcp_provider_repo.list()
+
+    def update_mcp_provider(
+        self, provider_name, *, expected_revision, expected_id=None, **changes
+    ):
+        """以 revision 与可选 ID 核对后更新共享认证。"""
+        return self._mcp_provider_repo.update(
+            provider_name, changes, expected_revision, expected_id
+        )
+
+    def delete_mcp_provider(self, name, *, expected_revision, expected_id=None):
+        """拒绝删除仍被 MCP 服务引用的认证身份。"""
+        return self._mcp_provider_repo.delete(name, expected_revision, expected_id)
+
+    def mcp_provider_references(self, name):
+        """查询共享认证身份的服务引用。"""
+        return self._mcp_provider_repo.mcp_provider_references(
+            self.get_mcp_provider(name).id
+        )
+
+    def validate_mcp_provider(self, provider, *, provider_id):
+        """预览共享认证修改对继承服务的影响；写事务再次核对。"""
+        for ref in self._mcp_provider_repo.mcp_provider_references(provider_id):
+            self._mcp_repo.validate_mcp(
+                self.get_mcp_server_by_id(ref["id"]), provider=provider
+            )
+
+    def validate_mcp_server(self, server):
+        """只读校验有效认证绑定；保存事务还会再次校验。"""
+        self._mcp_repo.validate_mcp(server)
+
+    def create_mcp_server(self, name, transport, settings, *, auth=None):
         return self._mcp_repo.create(
-            dict(name=name, transport=transport, settings=settings)
+            dict(
+                name=name,
+                transport=transport,
+                settings=settings,
+                **({"auth": auth} if auth is not None else {}),
+            )
         )
 
     def get_mcp_server(self, name: str) -> MCPServer:
@@ -450,7 +511,93 @@ class AgentsConfig:
             revision=server.revision,
             transport=server.transport,
             connection=server.settings,
+            auth=self._resolve_mcp_auth(server),
         )
+
+    def _resolve_mcp_auth(self, server):
+        from agentconf.models.mcp_provider import ResolvedMCPAuth, CredentialBinding
+
+        if server.auth.mode != "provider":
+            return ResolvedMCPAuth(
+                mode=server.auth.mode,
+                binding=getattr(server.auth, "binding", None),
+                reference=getattr(server.auth, "reference", None),
+            )
+        row = self._db.conn.execute(
+            "SELECT id,name,revision,default_binding_json,"
+            "(api_key IS NOT NULL AND length(api_key)>0) AS key_configured "
+            "FROM mcp_providers WHERE id=?",
+            (server.auth.provider_id,),
+        ).fetchone()
+        if row is None:
+            from agentconf.exceptions import MCPProviderNotFoundError
+
+            raise MCPProviderNotFoundError("MCP Provider 不存在")
+        binding = server.auth.binding
+        if server.auth.binding_mode == "inherit":
+            raw = json.loads(row["default_binding_json"] or "null")
+            binding = CredentialBinding.model_validate(raw) if raw is not None else None
+        if binding is None:
+            raise ValueError("MCP Provider 没有可继承的认证方式")
+        from agentconf.models.mcp_server import validate_binding
+
+        validate_binding(server.transport, server.settings, binding)
+        return ResolvedMCPAuth(
+            mode="provider",
+            provider_id=row["id"],
+            provider_name=row["name"],
+            provider_revision=row["revision"],
+            key_configured=bool(row["key_configured"]),
+            binding_mode=server.auth.binding_mode,
+            binding=binding,
+        )
+
+    def read_mcp_credential(
+        self,
+        server_id,
+        *,
+        expected_server_revision,
+        expected_provider_id,
+        expected_provider_revision,
+    ):
+        """按确定连接快照读取 Key；调用授权由宿主在此之前完成。"""
+        from pydantic import SecretStr
+        from agentconf.exceptions import (
+            RevisionConflictError,
+            MCPCredentialMissingError,
+        )
+
+        with self._snapshot():
+            server = self.get_mcp_server_by_id(server_id)
+            auth = self._resolve_mcp_auth(server)
+            if (server.revision, auth.provider_id, auth.provider_revision) != (
+                expected_server_revision,
+                expected_provider_id,
+                expected_provider_revision,
+            ) or auth.mode != "provider":
+                raise RevisionConflictError("MCP 凭据来源或版本已变化")
+            row = self._db.conn.execute(
+                "SELECT api_key FROM mcp_providers WHERE id=?", (auth.provider_id,)
+            ).fetchone()
+            if row is None or not row[0]:
+                raise MCPCredentialMissingError("MCP Provider 缺少密钥")
+            return SecretStr(row[0])
+
+    def read_mcp_inline_headers(self, server_id, *, expected_server_revision):
+        """实际调用前读取静态 HTTP 认证；静态解析不解包这些值。"""
+        from agentconf.exceptions import RevisionConflictError
+        from agentconf.models.mcp_server import StreamableHTTPConnection
+
+        with self._snapshot():
+            server = self.get_mcp_server_by_id(server_id)
+            if (
+                server.revision != expected_server_revision
+                or server.auth.mode != "inline"
+            ):
+                raise RevisionConflictError("MCP 静态认证配置已变化")
+            if not isinstance(server.settings, StreamableHTTPConnection):
+                raise ValueError("静态 HTTP 认证只适用于 streamable_http")
+            return server.settings.headers
 
     def resolve_mcp_server(self, name: str) -> ResolvedMCPServer:
         with self._snapshot():

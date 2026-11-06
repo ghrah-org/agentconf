@@ -78,7 +78,7 @@ def test_migrate_keeps_ids_references_parameters_and_null_binding(tmp_path, meta
         )
         assert cfg._db.conn.execute("PRAGMA foreign_key_check").fetchall() == []
         assert cfg._db.conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
-        assert cfg._db.conn.execute("PRAGMA user_version").fetchone()[0] == 5
+        assert cfg._db.conn.execute("PRAGMA user_version").fetchone()[0] == 6
         assert not {"model_metadata", "metadata_sources"} & cfg._db._tables()
         # 新协议由 Python 校验，旧 providers CHECK 不再阻塞。
         cfg.create_provider("deep", "deepseek", "https://deep.invalid", "test")

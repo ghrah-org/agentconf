@@ -17,8 +17,10 @@ from agentconf.operations import (
     apply_resource,
     delete_resource,
     resolve_resource,
+    resource_references,
 )
 from agentconf.tui.screens.dialog import DialogScreen, ConfirmDialog
+from agentconf.tui.widgets.connection_editors import CollectionEditor, BindingEditor
 
 
 def text(value):
@@ -58,9 +60,10 @@ class ResourceDetailDialog(DialogScreen):
             id="resource-detail",
             classes="resource-json",
         )
-        if self.domain == "provider":
+        if self.domain in {"provider", "mcp-provider"}:
             yield Label(
-                "引用端点: " + ", ".join(cfg.provider_references(self.resource_name)),
+                "引用: "
+                + str(resource_references(cfg, self.domain, self.resource_name)),
                 markup=False,
             )
         yield Label("这里只展示静态配置，不联网、不启动命令。")
@@ -92,6 +95,11 @@ class ResourceEditDialog(DialogScreen):
             else None
         )
         data = resource_input(cfg, self.domain, self.old) if self.old else {}
+        raw = (
+            resource_input(cfg, self.domain, self.old, show_secrets=True)
+            if self.old
+            else {}
+        )
         yield from self.field("名称", "res-name", data.get("name"))
         if self.domain == "provider":
             yield from self.field(
@@ -144,43 +152,71 @@ class ResourceEditDialog(DialogScreen):
                 id="endpoint-profile",
                 value=data.get("capabilities_key") or Select.NULL,
             )
-        else:
+        elif self.domain == "mcp-provider":
             yield from self.field(
-                "transport（stdio / streamable_http / 自定义）",
-                "mcp-transport",
-                data.get("transport", "stdio"),
+                "厂商／账号说明（可空）", "mcp-provider-vendor", data.get("vendor")
             )
-            settings = data.get("settings", {})
-            known = settings if isinstance(settings, dict) else {}
+            yield from self.field(
+                "API Key（掩码保留，空值清空）",
+                "mcp-provider-key",
+                data.get("api_key"),
+                secret=True,
+            )
+            yield Label("共享默认认证方式")
+            yield BindingEditor(data.get("default_binding"), id="provider-binding")
+        else:
+            transport = data.get("transport", "stdio")
+            yield Label("传输方式")
+            yield Select(
+                [
+                    ("标准输入输出（stdio）", "stdio"),
+                    ("Streamable HTTP", "streamable_http"),
+                    ("自定义", "custom"),
+                ],
+                value=transport
+                if transport in {"stdio", "streamable_http"}
+                else "custom",
+                allow_blank=False,
+                id="mcp-transport",
+            )
+            with Vertical(id="custom-transport-field", classes="settings-form"):
+                yield from self.field(
+                    "自定义 transport 名称",
+                    "mcp-custom-transport",
+                    transport if transport not in {"stdio", "streamable_http"} else "",
+                )
+            known = raw.get("settings", {})
+            safe_settings = (
+                data.get("settings") if isinstance(data.get("settings"), dict) else {}
+            )
             with Vertical(id="stdio-fields", classes="settings-form"):
                 yield from self.field(
                     "启动命令（只保存，不执行）",
                     "mcp-command",
-                    known.get("command"),
+                    safe_settings.get("command"),
                     secret=True,
                 )
-                yield from self.json_field(
-                    "args JSON 数组", "mcp-args", known.get("args", [])
+                yield Label("命令参数（逐项添加／删除）")
+                yield CollectionEditor(
+                    known.get("args", []), mapping=False, id="mcp-args"
                 )
-                yield from self.json_field(
-                    "env JSON 对象", "mcp-env", known.get("env", {})
-                )
+                yield Label("环境变量")
+                yield CollectionEditor(known.get("env", {}), id="mcp-env")
                 yield from self.field(
-                    "cwd（可空）", "mcp-cwd", known.get("cwd"), secret=True
+                    "cwd（可空）",
+                    "mcp-cwd",
+                    safe_settings.get("cwd"),
+                    secret=True,
                 )
             with Vertical(id="http-fields", classes="settings-form"):
                 yield from self.field(
-                    "HTTP(S) URL", "mcp-url", known.get("url"), secret=True
-                )
-                yield from self.json_field(
-                    "headers JSON 对象", "mcp-headers", known.get("headers", {})
-                )
-                yield from self.field(
-                    "凭据引用（仅描述，由宿主处理）",
-                    "mcp-credential",
-                    known.get("credential_ref"),
+                    "HTTP(S) URL",
+                    "mcp-url",
+                    safe_settings.get("url"),
                     secret=True,
                 )
+                yield Label("连接 headers（认证头由下方认证方式生成）")
+                yield CollectionEditor(known.get("headers", {}), id="mcp-headers")
                 yield from self.field(
                     "协议版本提示（可空）",
                     "mcp-version",
@@ -194,13 +230,49 @@ class ResourceEditDialog(DialogScreen):
                 )
             with Vertical(id="custom-fields", classes="settings-form"):
                 yield from self.json_field(
-                    "自定义连接 JSON；宿主自行支持",
+                    "自定义连接 JSON",
                     "mcp-custom",
-                    settings
-                    if data.get("transport") not in {"stdio", "streamable_http", None}
+                    data.get("settings", {})
+                    if transport not in {"stdio", "streamable_http"}
                     else {},
                 )
-        yield Label("敏感字段默认隐藏；掩码保留原值，null/空字段按类型清空。")
+            auth = data.get("auth", {"mode": "none"})
+            yield Label("认证来源")
+            yield Select(
+                [
+                    ("无需认证", "none"),
+                    ("MCP Provider", "provider"),
+                    ("静态认证（存于 headers／env）", "inline"),
+                    ("高级宿主引用", "external"),
+                ],
+                value=auth["mode"],
+                allow_blank=False,
+                id="mcp-auth-mode",
+            )
+            with Vertical(id="mcp-auth-provider", classes="settings-form"):
+                yield Label("MCP Provider")
+                yield Select(
+                    [(p.name, p.id) for p in cfg.list_mcp_providers()],
+                    value=auth.get("provider_id", Select.NULL),
+                    id="mcp-provider-select",
+                )
+                yield Button("创建 MCP Provider", id="mcp-new-provider")
+                yield Label("", id="mcp-provider-hint", markup=False)
+                yield Select(
+                    [("继承 Provider", "inherit"), ("显式覆盖认证方式", "override")],
+                    value=auth.get("binding_mode", "inherit"),
+                    allow_blank=False,
+                    id="mcp-binding-mode",
+                )
+            with Vertical(id="mcp-auth-external", classes="settings-form"):
+                yield from self.field(
+                    "宿主凭据引用（此库不解释）",
+                    "mcp-external-ref",
+                    auth.get("reference"),
+                    secret=True,
+                )
+            yield BindingEditor(auth.get("binding"), id="mcp-auth-binding")
+        yield Label("敏感项：掩码保留原值；空值清空。预览后再次确认保存。")
         yield TextArea(
             "先预览，再确认保存。",
             read_only=True,
@@ -209,28 +281,76 @@ class ResourceEditDialog(DialogScreen):
         )
 
     def on_mount(self):
+        self.query_one("#resource-preview").display = False
         if self.domain == "mcp":
             self.refresh_transport()
+            self.refresh_auth()
 
     def refresh_transport(self):
-        transport = self.query_one("#mcp-transport", Input).value
+        transport = self.query_one("#mcp-transport", Select).value
         self.query_one("#stdio-fields").display = transport == "stdio"
         self.query_one("#http-fields").display = transport == "streamable_http"
         self.query_one("#known-timeout").display = transport in {
             "stdio",
             "streamable_http",
         }
-        self.query_one("#custom-fields").display = transport not in {
-            "stdio",
-            "streamable_http",
-        }
+        self.query_one("#custom-fields").display = transport == "custom"
+        self.query_one("#custom-transport-field").display = transport == "custom"
+
+    def refresh_auth(self):
+        mode = self.query_one("#mcp-auth-mode", Select).value
+        self.query_one("#mcp-auth-provider").display = mode == "provider"
+        self.query_one("#mcp-auth-external").display = mode == "external"
+        self.query_one("#mcp-auth-binding").display = mode == "external" or (
+            mode == "provider"
+            and self.query_one("#mcp-binding-mode", Select).value == "override"
+        )
+        selected = self.query_one("#mcp-provider-select", Select).value
+        if selected is not Select.NULL:
+            try:
+                provider = self.app.config.get_mcp_provider_by_id(selected)
+                binding = provider.default_binding
+                description = (
+                    f"{binding.name}：{binding.value_template}" if binding else "未设置"
+                )
+                self.query_one("#mcp-provider-hint", Label).update(
+                    f"{provider.name}：{'密钥已配置' if provider.api_key else '缺少密钥'}；默认认证 {description}"
+                )
+            except AgentsConfigError:
+                self.query_one("#mcp-provider-hint", Label).update(
+                    "关联 Provider 已变化，请重新选择"
+                )
+
+    def on_select_changed(self, event):
+        if self.domain == "mcp" and self.is_mounted:
+            if event.select.id == "mcp-transport":
+                self.refresh_transport()
+            elif event.select.id in {
+                "mcp-auth-mode",
+                "mcp-provider-select",
+                "mcp-binding-mode",
+            }:
+                self.refresh_auth()
+
+    def on_button_pressed(self, event):
+        if event.button.id == "mcp-new-provider":
+            event.stop()
+
+            def created(record):
+                if record:
+                    select = self.query_one("#mcp-provider-select", Select)
+                    select.set_options(
+                        [(p.name, p.id) for p in self.app.config.list_mcp_providers()]
+                    )
+                    select.value = record.id
+                    self.refresh_auth()
+
+            self.app.push_screen(ResourceEditDialog("mcp-provider"), created)
 
     def on_input_changed(self, event):
         if not self.is_mounted:
             return
-        if event.input.id == "mcp-transport":
-            self.refresh_transport()
-        elif event.input.id == "endpoint-type":
+        if event.input.id == "endpoint-type":
             profiles = (
                 [
                     (p.display_name + " / " + p.model_key, p.model_key)
@@ -271,24 +391,57 @@ class ResourceEditDialog(DialogScreen):
                 api_format=self.value("endpoint-format"),
                 capabilities_key=None if profile is Select.NULL else profile,
             )
+        elif self.domain == "mcp-provider":
+            data.update(
+                vendor=self.value("mcp-provider-vendor") or None,
+                api_key=self.value("mcp-provider-key") or None,
+                default_binding=self.query_one(
+                    "#provider-binding", BindingEditor
+                ).value(),
+            )
         else:
-            transport = self.value("mcp-transport")
+            transport = self.query_one("#mcp-transport", Select).value
+            if transport == "custom":
+                transport = self.value("mcp-custom-transport")
+                if not transport.strip() or transport in {"stdio", "streamable_http"}:
+                    raise ValueError(
+                        "请填写非空自定义 transport；已知方式请直接下拉选择"
+                    )
             if transport == "stdio":
                 settings = dict(
                     command=self.value("mcp-command"),
-                    args=self.json_value("mcp-args"),
-                    env=self.json_value("mcp-env"),
+                    args=self.query_one("#mcp-args", CollectionEditor).value(),
+                    env=self.query_one("#mcp-env", CollectionEditor).value(),
                     cwd=self.value("mcp-cwd") or None,
                 )
             elif transport == "streamable_http":
                 settings = dict(
                     url=self.value("mcp-url"),
-                    headers=self.json_value("mcp-headers"),
-                    credential_ref=self.value("mcp-credential") or None,
+                    headers=self.query_one("#mcp-headers", CollectionEditor).value(),
                     protocol_version_hint=self.value("mcp-version") or None,
                 )
             else:
                 settings = self.json_value("mcp-custom")
+            mode = self.query_one("#mcp-auth-mode", Select).value
+            auth = {"mode": mode}
+            if mode == "provider":
+                provider = self.query_one("#mcp-provider-select", Select).value
+                if provider is Select.NULL:
+                    raise ValueError("请选择或创建 MCP Provider")
+                auth.update(
+                    provider_id=provider,
+                    binding_mode=self.query_one("#mcp-binding-mode", Select).value,
+                )
+                if auth["binding_mode"] == "override":
+                    auth["binding"] = self.query_one(
+                        "#mcp-auth-binding", BindingEditor
+                    ).value()
+            elif mode == "external":
+                auth.update(
+                    reference=self.value("mcp-external-ref"),
+                    binding=self.query_one("#mcp-auth-binding", BindingEditor).value(),
+                )
+            data["auth"] = auth
             if transport in {"stdio", "streamable_http"}:
                 timeout = self.value("mcp-timeout")
                 try:
@@ -307,13 +460,14 @@ class ResourceEditDialog(DialogScreen):
                 json.dumps(self.payload(), sort_keys=True).encode()
             ).hexdigest()
             if digest != self._reviewed:
-                self.query_one("#resource-preview", TextArea).load_text(
-                    candidate.model_dump_json(indent=2)
-                )
+                preview = self.query_one("#resource-preview", TextArea)
+                preview.display = True
+                preview.load_text(candidate.model_dump_json(indent=2))
+                preview.scroll_visible()
                 self._reviewed = digest
                 return
-            apply_resource(self.app.config, self.domain, patch, old=self.old)
-            self.dismiss(True)
+            saved = apply_resource(self.app.config, self.domain, patch, old=self.old)
+            self.dismiss(saved)
             self.app.show_toast("配置已保存")
         except (AgentsConfigError, ValueError, TypeError) as exc:
             self._flash_error(str(exc))
@@ -336,7 +490,7 @@ class ResourceScreen(Container):
                     ("delete", "删除"),
                 ]:
                     yield Button(label, id=self.domain + "-" + action)
-                if self.domain != "provider":
+                if self.domain not in {"provider", "mcp-provider"}:
                     yield Button("解析预览", id=self.domain + "-resolve")
 
     def on_mount(self):
@@ -357,10 +511,29 @@ class ResourceScreen(Container):
                 "model_type",
                 getattr(record, "transport", getattr(record, "provider_type", "")),
             )
+            detail = getattr(record, "api_format", "")
+            if self.domain == "mcp-provider":
+                kind = record.vendor or "MCP"
+                detail = (
+                    ("密钥已配置" if record.api_key else "缺少密钥")
+                    + " / "
+                    + str(
+                        record.default_binding.target
+                        if record.default_binding
+                        else "无默认认证"
+                    )
+                )
+            elif self.domain == "mcp":
+                detail = record.auth.mode
+                if detail == "provider":
+                    provider = self.app.config.get_mcp_provider_by_id(
+                        record.auth.provider_id
+                    )
+                    detail = provider.name + " / " + record.auth.binding_mode
             table.add_row(
                 record.name,
                 kind,
-                getattr(record, "api_format", ""),
+                detail,
                 str(record.revision),
                 key=record.name,
             )
@@ -395,8 +568,8 @@ class ResourceScreen(Container):
             elif action == "delete":
                 record = get_resource(self.app.config, self.domain, name)
                 refs = (
-                    self.app.config.provider_references(name)
-                    if self.domain == "provider"
+                    resource_references(self.app.config, self.domain, name)
+                    if self.domain in {"provider", "mcp-provider"}
                     else []
                 )
 
@@ -415,6 +588,6 @@ class ResourceScreen(Container):
                             self.app.show_toast(str(exc), error=True)
 
                 self.app.push_screen(
-                    ConfirmDialog("删除配置", name + "\n引用端点: " + ", ".join(refs)),
+                    ConfirmDialog("删除配置", name + "\n引用: " + str(refs)),
                     confirm,
                 )

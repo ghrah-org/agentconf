@@ -66,3 +66,27 @@ __all__ = [
     "ModelInfo",
     "ResolvedMetadata",
 ]
+
+from agentconf.models.mcp_provider import (
+    CredentialBinding,
+    NoAuth,
+    InlineAuth,
+    ProviderAuth,
+    ExternalAuth,
+    MCPProvider,
+    MCPProviderCreate,
+    MCPProviderUpdate,
+    ResolvedMCPAuth,
+)
+
+__all__ += [
+    "CredentialBinding",
+    "NoAuth",
+    "InlineAuth",
+    "ProviderAuth",
+    "ExternalAuth",
+    "MCPProvider",
+    "MCPProviderCreate",
+    "MCPProviderUpdate",
+    "ResolvedMCPAuth",
+]

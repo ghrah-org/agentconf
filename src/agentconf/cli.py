@@ -108,7 +108,7 @@ def main(argv: list[str] | None = None) -> None:
             "create",
             "update",
             "delete",
-            "references" if domain == "provider" else "resolve",
+            "references" if domain in {"provider", "mcp-provider"} else "resolve",
         ):
             cmd = actions.add_parser(action)
             if action != "create":
@@ -128,6 +128,9 @@ def main(argv: list[str] | None = None) -> None:
     initializing.add_argument("--db-path", default=argparse.SUPPRESS)
     removed = commands.add_parser("agent", help="旧 Agent 聚合配置已移出")
     removed.add_argument("legacy_args", nargs=argparse.REMAINDER)
+    migrate.choices["prepare"].add_argument(
+        "--mcp-map", help="MCP 身份与认证迁移映射 JSON"
+    )
     migrate.choices["prepare"].add_argument(
         "--formats", help="端点名称到 api_format 的 JSON 文件"
     )
@@ -152,7 +155,7 @@ def main(argv: list[str] | None = None) -> None:
             )
         if args.command == "init":
             with AgentsConfig(path) as cfg:
-                emit({"schema_version": 5, "catalog_entries": len(cfg.catalog_list())})
+                emit({"schema_version": 6, "catalog_entries": len(cfg.catalog_list())})
             return
         if args.command in DOMAINS:
             run_resource(args, path, emit)
@@ -161,6 +164,9 @@ def main(argv: list[str] | None = None) -> None:
             if args.operation == "prepare":
                 plan = prepare_migration(
                     path,
+                    mcp_map=json.loads(Path(args.mcp_map).read_text())
+                    if args.mcp_map
+                    else None,
                     api_formats=json.loads(Path(args.formats).read_text())
                     if args.formats
                     else None,
@@ -418,6 +424,7 @@ def main(argv: list[str] | None = None) -> None:
 
 
 def run_resource(args, path, emit):
+    from agentconf.operations import resource_references
     from agentconf.operations import (
         get_resource,
         list_resources,
@@ -475,7 +482,7 @@ def run_resource(args, path, emit):
                 }
             )
         elif operation == "references":
-            emit({"references": cfg.provider_references(args.key)})
+            emit({"references": resource_references(cfg, domain, args.key)})
         elif operation == "resolve":
             emit(
                 resolve_resource(cfg, domain, args.key).model_dump(
@@ -510,8 +517,8 @@ def run_resource(args, path, emit):
             report = {
                 "delete": old.model_dump(mode="json"),
                 "revision": old.revision,
-                "references": cfg.provider_references(args.key)
-                if domain == "provider"
+                "references": resource_references(cfg, domain, args.key)
+                if domain in {"provider", "mcp-provider"}
                 else [],
             }
             if args.apply:

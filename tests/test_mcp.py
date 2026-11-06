@@ -73,7 +73,15 @@ def test_no_network_process_sdk_import_or_environment_resolution(cfg):
         {
             "url": "https://user:" + SENTINEL + "@host.invalid/mcp?token=" + SENTINEL,
             "headers": {"Authorization": SENTINEL},
-            "credential_ref": "opaque-secret-reference",
+        },
+        auth={
+            "mode": "external",
+            "reference": "opaque-secret-reference",
+            "binding": {
+                "target": "http_header",
+                "name": "X-Auth",
+                "value_template": "{{auth}}",
+            },
         },
     )
     cfg.create_mcp_server("custom", "unregistered", {"custom": {"token": SENTINEL}})

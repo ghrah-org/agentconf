@@ -105,3 +105,11 @@ class RevisionConflictError(AgentsConfigError):
 
 class LegacyAPIError(AgentsConfigError):
     """旧聚合 API 已移除，需要迁移到独立资源 API。"""
+
+
+class MCPProviderNotFoundError(AgentsConfigError):
+    """MCP 认证身份不存在。"""
+
+
+class MCPCredentialMissingError(AgentsConfigError):
+    """MCP 认证身份没有有效密钥。"""

@@ -191,7 +191,7 @@ def test_catalog_crud_lineage_and_migration_commands(tmp_path, capsys):
     assert report["source_version"] == 3
     assert path.read_bytes() == before
     main(["migrate", "apply", "--plan", str(planfile)])
-    assert json.loads(capsys.readouterr().out)["schema_version"] == 5
+    assert json.loads(capsys.readouterr().out)["schema_version"] == 6
     base = ["--db-path", str(path), "catalog"]
     main(base + ["derive", "v/m", "--as", "local/tuned"])
     assert json.loads(capsys.readouterr().out)["new_key"] == "local/tuned"
@@ -390,4 +390,4 @@ def test_migrate_cli_requires_explicit_format_for_custom_and_preserves_plan(
     )
     assert json.loads(capsys.readouterr().out)["unresolved"] == []
     main(["migrate", "apply", "--plan", str(planfile)])
-    assert json.loads(capsys.readouterr().out)["schema_version"] == 5
+    assert json.loads(capsys.readouterr().out)["schema_version"] == 6

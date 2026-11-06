@@ -67,7 +67,7 @@ def test_offline_seed_once_and_no_fake_connections(tmp_path):
             cfg._db.conn.commit()
         with AgentsConfig(path) as cfg:
             assert cfg.catalog_list() == []
-            assert cfg._db.conn.execute("PRAGMA user_version").fetchone()[0] == 5
+            assert cfg._db.conn.execute("PRAGMA user_version").fetchone()[0] == 6
 
 
 @pytest.mark.parametrize(

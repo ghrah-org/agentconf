@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 
 from agentconf.exceptions import (
     ProviderNotFoundError,
+    MCPProviderNotFoundError,
     EndpointNotFoundError,
     MCPServerNotFoundError,
     ResourceAlreadyExistsError,
@@ -21,6 +22,8 @@ from agentconf.models.provider import Provider, ProviderCreate
 from agentconf.models.model_endpoint import ModelEndpoint, ModelEndpointCreate
 from agentconf.models.mcp_server import MCPServer, MCPServerCreate, GenericMCPConnection
 from agentconf.models.secure import reveal, MASK, merge_masked
+from agentconf.models.mcp_provider import MCPProvider, MCPProviderCreate, ProviderAuth
+from agentconf.models.mcp_server import validate_binding
 
 
 @contextmanager
@@ -47,7 +50,18 @@ SPEC = {
         EndpointNotFoundError,
         set(),
     ),
-    "mcp_servers": (MCPServer, MCPServerCreate, MCPServerNotFoundError, {"settings"}),
+    "mcp_servers": (
+        MCPServer,
+        MCPServerCreate,
+        MCPServerNotFoundError,
+        {"settings", "auth"},
+    ),
+    "mcp_providers": (
+        MCPProvider,
+        MCPProviderCreate,
+        MCPProviderNotFoundError,
+        {"default_binding"},
+    ),
 }
 
 
@@ -63,9 +77,11 @@ def resource_data(model):
 
 def editable_data(model, *, provider_name=None, show_secrets=False):
     """只给出可编辑字段，默认以掩码保留敏感值。"""
-    if isinstance(model, Provider):
+    if isinstance(model, (Provider, MCPProvider)):
         data = resource_data(model) if show_secrets else model.model_dump(mode="json")
-        allowed = ProviderCreate.model_fields
+        allowed = (
+            ProviderCreate if isinstance(model, Provider) else MCPProviderCreate
+        ).model_fields
     elif isinstance(model, ModelEndpoint):
         data = resource_data(model)
         data["provider_name"] = provider_name
@@ -73,6 +89,7 @@ def editable_data(model, *, provider_name=None, show_secrets=False):
     else:
         data = resource_data(model)
         if not show_secrets:
+            data["auth"] = model.auth.model_dump(mode="json")
             if isinstance(model.settings, GenericMCPConnection):
                 data["settings"] = MASK
             else:
@@ -90,8 +107,17 @@ class ResourceRepository:
         data = dict(row)
         if self.table == "mcp_servers":
             data["settings"] = data.pop("settings_json")
+            auth = json.loads(data.pop("auth_settings_json"))
+            auth["mode"] = data.pop("auth_mode")
+            provider = data.pop("mcp_provider_id")
+            if provider is not None:
+                auth["provider_id"] = provider
+            data["auth"] = json.dumps(auth)
+        if self.table == "mcp_providers":
+            data["default_binding"] = data.pop("default_binding_json")
         for field in self.json_fields:
-            data[field] = json.loads(data[field])
+            if data[field] is not None:
+                data[field] = json.loads(data[field])
         return self.model.model_validate(data)
 
     def get(self, name):
@@ -123,7 +149,33 @@ class ResourceRepository:
             )
         ]
 
+    def mcp_provider_references(self, provider_id):
+        return [
+            dict(row)
+            for row in self.conn.execute(
+                "SELECT id,name,transport FROM mcp_servers WHERE mcp_provider_id=? ORDER BY name",
+                (provider_id,),
+            )
+        ]
+
+    def validate_mcp(self, server, *, provider=None):
+        if isinstance(server.auth, ProviderAuth):
+            if provider is None:
+                provider = ResourceRepository(self.conn, "mcp_providers").get_by_id(
+                    server.auth.provider_id
+                )
+            binding = (
+                provider.default_binding
+                if server.auth.binding_mode == "inherit"
+                else server.auth.binding
+            )
+            if binding is None:
+                raise ValueError("MCP Provider 没有可继承的认证方式")
+            validate_binding(server.transport, server.settings, binding)
+
     def bind(self, data):
+        if self.table == "mcp_servers":
+            self.validate_mcp(MCPServerCreate.model_validate(data))
         if self.table != "model_endpoints":
             return data
         provider = self.conn.execute(
@@ -168,6 +220,12 @@ class ResourceRepository:
             )
         if self.table == "mcp_servers":
             data["settings_json"] = data.pop("settings")
+            auth = json.loads(data.pop("auth"))
+            data["auth_mode"] = auth.pop("mode")
+            data["mcp_provider_id"] = auth.pop("provider_id", None)
+            data["auth_settings_json"] = json.dumps(auth, sort_keys=True)
+        elif self.table == "mcp_providers":
+            data["default_binding_json"] = data.pop("default_binding")
         return data
 
     def update(self, name, patch, expected_revision, expected_id=None):
@@ -188,15 +246,22 @@ class ResourceRepository:
             )
             values.update(patch)
             validated = self.create_model.model_validate(values)
+            values = self.bind(resource_data(validated))
             candidate = self.model.model_validate(
                 {
-                    **self.bind(resource_data(validated)),
+                    **values,
                     "id": old.id,
                     "revision": old.revision + 1,
                     "created_at": old.created_at,
                     "updated_at": datetime.now(timezone.utc),
                 }
             )
+            if self.table == "mcp_providers":
+                for ref in self.mcp_provider_references(old.id):
+                    server = ResourceRepository(self.conn, "mcp_servers").get_by_id(
+                        ref["id"]
+                    )
+                    self.validate_mcp(server, provider=candidate)
             data = self.encode(candidate)
             columns = [key for key in data if key != "id"]
             try:
@@ -217,4 +282,6 @@ class ResourceRepository:
                 raise RevisionConflictError("资源已变化，请重新预览")
             if self.table == "providers" and self.provider_references(old.id):
                 raise ResourceInUseError("Provider 仍被模型端点引用")
+            if self.table == "mcp_providers" and self.mcp_provider_references(old.id):
+                raise ResourceInUseError("MCP Provider 仍被 MCP 服务引用")
             self.conn.execute(f"DELETE FROM {self.table} WHERE id=?", (old.id,))

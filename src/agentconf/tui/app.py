@@ -64,9 +64,10 @@ class agentconfApp(App[None]):
             return
         with TabbedContent():
             for domain, label in (
-                ("provider", "Provider"),
+                ("provider", "模型 Provider"),
                 ("endpoint", "模型端点"),
-                ("mcp", "MCP"),
+                ("mcp-provider", "MCP Provider"),
+                ("mcp", "MCP 服务"),
             ):
                 from agentconf.tui.screens.resource_screens import ResourceScreen
 

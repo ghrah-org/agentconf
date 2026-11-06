@@ -12,6 +12,7 @@ from agentconf.models.mcp_server import (
     GenericMCPConnection,
 )
 from agentconf.models.secure import SafeModel, SecretJSON
+from agentconf.models.mcp_provider import ResolvedMCPAuth
 
 
 class ModelConnection(SafeModel):
@@ -58,6 +59,7 @@ class ResolvedMCPServer(SafeModel):
     revision: int
     transport: str
     connection: MCPConnection
+    auth: ResolvedMCPAuth | None = None
 
     @model_validator(mode="after")
     def transport_matches(self):

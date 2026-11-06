@@ -93,6 +93,7 @@ def test_all_starting_versions_export_before_removing_agent_and_preserve_identit
             "model_endpoints",
             "model_capabilities",
             "mcp_servers",
+            "mcp_providers",
         }
         assert cfg.catalog_list() == []
         assert cfg._db.conn.execute("PRAGMA foreign_key_check").fetchall() == []
@@ -182,7 +183,7 @@ def test_interruptions_are_retriable_without_losing_or_overwriting_export(
     export = plan.artifact("agents").read_bytes()
     with sqlite3.connect(path) as conn:
         version = conn.execute("PRAGMA user_version").fetchone()[0]
-        assert version == (5 if stage == "after_commit" else 4)
+        assert version == (6 if stage == "after_commit" else 4)
     result = apply_migration(plan)
     assert result["already_applied"] == (stage == "after_commit")
     assert plan.artifact("agents").read_bytes() == export
@@ -262,7 +263,7 @@ def test_prepare_latest_schema_validates_columns_and_rows_before_noop(tmp_path):
     path = tmp_path / "config.db"
     with AgentsConfig(path):
         pass
-    with pytest.raises(MigrationError, match="已经是 schema 5"):
+    with pytest.raises(MigrationError, match="已经是 schema 6"):
         prepare_migration(path)
     with sqlite3.connect(path) as conn:
         conn.execute("ALTER TABLE providers ADD COLUMN unexpected TEXT")

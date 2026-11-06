@@ -2,7 +2,7 @@
 
 agentconf 是一个静态配置 SDK：保存模型连接、请求模型标识、模型能力目录与 MCP Server 连接，并分别解析模型端点和 MCP。它基于 Pydantic 与 SQLite，不发送模型请求、不连接 MCP、不规定 Agent 的组合或授权方式。
 
-当前版本 **0.3.0**，数据库 schema 5。模型接口与旧 Agent 聚合 API 已发生破坏性变化；消费者须配套迁移，不能直接替换仍调用 resolve_agent 的运行环境。
+当前开发版本 **0.4.0**，数据库 schema 6。模型接口与旧 Agent 聚合 API 已发生破坏性变化；消费者须配套迁移，不能直接替换仍调用 resolve_agent 的运行环境。
 
 ## 安装和打开
 
@@ -17,16 +17,17 @@ uv run agentconf init --db-path ./config.db
 
 裸命令打开 TUI。首次创建数据库离线写入随包能力种子；已存在的目录不随启动、包更新或清空而重新播种。默认路径为 `~/.agentconf/config.db`。已有旧库需要先显式迁移，普通打开不会自动升级。
 
-## 四种资源与职责
+## 五种资源与职责
 
 | 资源 | 保存什么 |
 | --- | --- |
 | Provider | 服务商/兼容家族、URL、可空密钥、连接选项 |
 | ModelEndpoint | 具名端点、实际请求模型名、用途、接口格式、Provider 引用与可选能力引用 |
 | CapabilityProfile | 固定发布模型的原始能力声明、来源及派生关系 |
-| MCPServer | 独立的 transport 与连接设置，不经过 Provider/模型表 |
+| MCPProvider | 独立的 MCP API Key 与默认认证方式，供多个 MCP Server 共享 |
+| MCPServer | 具体 transport、URL 或进程设置，通过稳定 ID 引用 MCP Provider，可显式覆盖认证方式 |
 
-Provider → ModelEndpoint → 可选 CapabilityProfile。MCP 独立管理，允许与模型端点同名，通过不同 API 查找。删除被端点引用的 Provider 或能力档案会被拒绝，不级联删除配置。
+Provider → ModelEndpoint → 可选 CapabilityProfile。模型 Provider 与 MCP Provider 分域管理；MCP Server 引用 MCP Provider 的 UUID，改名不改变关联。不同域允许同名，通过不同 API 查找。删除被端点引用的 Provider 或能力档案会被拒绝，不级联删除配置。
 
 `provider_type` 是服务商或兼容家族，`model_type` 是用途，`api_format` 是调用契约。三者使用开放字符串，不能互相推断。例如一个网关同时提供 `openai.chat_completions`、`openai.responses`、`openai.embeddings` 或专门音频接口，各端点分别声明格式。
 
@@ -64,27 +65,42 @@ SDK hint 只是建议包名，不导入或安装该包。内置提示覆盖 Chat
 
 不接受端点级连接覆盖、采样参数或 Agent 主备关系；temperature、max_tokens、工具授权等由下游保存。
 
-## MCP SDK
+## MCP Provider 与服务 SDK
 
-已知 transport 按独立设置模型严格校验；无效已知设置不会退回 Generic：
+MCP Provider 表示某厂商账号／项目的一套 Key 和共享认证方式，不需要填写模型服务 URL 或接口格式。同一厂商有不同账号、项目或 Key 时分别建记录；一套身份可以被多个 MCP 服务引用。
+
+```python
+provider = cfg.create_mcp_provider(
+    "vendor/work-account", vendor="vendor", api_key="example-mcp-key",
+    default_binding={"target": "http_header", "name": "Authorization",
+                     "value_template": "Bearer {{auth}}"},
+)
+for name, url in [("search", "https://tools.example.com/search/mcp"),
+                  ("fetch", "https://tools.example.com/fetch/mcp")]:
+    cfg.create_mcp_server(name, "streamable_http", {"url": url}, auth={
+        "mode": "provider", "provider_id": provider.id, "binding_mode": "inherit",
+    })
+resolved = cfg.resolve_mcp_server("search")
+assert resolved.auth.provider_id == provider.id
+# 解析仅有无密钥描述。宿主通过自己的调用授权后，再核对快照并读取 Key：
+key = cfg.read_mcp_credential(
+    resolved.server_id, expected_server_revision=resolved.revision,
+    expected_provider_id=resolved.auth.provider_id,
+    expected_provider_revision=resolved.auth.provider_revision,
+)
+```
+
+Server 的 auth.mode 明确区分 none、provider、inline、external。provider 必须选择 inherit 或 override；覆盖只改变认证目标和格式，不复制或覆盖共享 Key。http_header 支持 Header 名称与单个 `{{auth}}` 模板，stdio_env 支持环境变量名与模板；有效绑定必须适配 transport，不能与连接 headers／env 同名冲突。被引用的 MCP Provider 不能删除，修改默认认证也会检查所有继承服务。
+
+stdio 保存 command、args、env、cwd；HTTP 保存 url、headers、protocol_version_hint；两者可设置正数 connect_timeout。自定义 transport 保存任意 JSON，是否执行由宿主决定。inline 显式保存静态连接认证，external 保存不透明宿主引用与绑定；本库不访问外部凭据服务。
 
 ```python
 cfg.create_mcp_server("filesystem", "stdio", {
     "command": "python", "args": ["-m", "my_mcp_server"], "env": {}, "cwd": None,
 })
-cfg.create_mcp_server("remote-tools", "streamable_http", {
-    "url": "https://tools.example.com/mcp",
-    "headers": {}, "credential_ref": "my-host/tools-service",
-    "protocol_version_hint": None,
-})
-server = cfg.resolve_mcp_server("filesystem")
-assert server.transport == "stdio"
-command = server.connection.command.get_secret_value()
 ```
 
-stdio 支持 command、args、env、cwd；streamable_http 支持 url、headers、credential_ref、protocol_version_hint。两者可设置正数 connect_timeout。未知 transport 保存任意 JSON 对象，解析为 GenericMCPConnection.options；是否支持由宿主决定。旧 SSE 不内置专用适配，可作为自定义 transport 保存。
-
-凭据引用是宿主可识别的描述，本库不读环境/文件或凭据服务。协议版本提示不是协商结果。没有 trusted、工具名单、审批、角色、会话、发现结果或健康状态字段；进程、网络、协议处理与授权都由宿主负责。
+本库不连接 MCP、不启动命令；没有工具授权、审批、会话、发现或健康状态字段。ghrah 的当前宿主仅执行 streamable HTTP，并明确拒绝 external 和 stdio 执行；配置可保存不等于所有宿主均支持执行。
 
 ## CRUD、并发与批量解析
 
@@ -92,7 +108,8 @@ stdio 支持 command、args、env、cwd；streamable_http 支持 url、headers�
 | --- | --- |
 | Provider | create/get/get_by_id/list/update/delete_provider，provider_references |
 | 模型端点 | create/get/get_by_id/list/update/delete_model_endpoint，resolve_model_endpoint(s) |
-| MCP | create/get/get_by_id/list/update/delete_mcp_server，resolve_mcp_server(s) |
+| MCP Provider | create/get/get_by_id/list/update/delete_mcp_provider，mcp_provider_references |
+| MCP | create/get/get_by_id/list/update/delete_mcp_server，resolve_mcp_server(s)、read_mcp_credential |
 | 能力目录 | catalog_create/get/list/edit/delete、derive/clone/variants/diff/rebuild/relocate、import/update 预览及应用 |
 
 方法名称具体为 get_provider_by_id、list_providers、get_model_endpoint_by_id、list_model_endpoints、get_mcp_server_by_id、list_mcp_servers 等。
@@ -149,6 +166,8 @@ agentconf provider references gateway
 agentconf endpoint create --file /tmp/endpoint.json --apply
 agentconf endpoint list --type llm --api-format openai.responses
 agentconf endpoint resolve chat-main
+agentconf mcp-provider create --file /tmp/mcp-provider.json --apply
+agentconf mcp-provider references vendor/work-account
 agentconf mcp create --file /tmp/mcp.json --apply
 agentconf mcp list --transport stdio
 agentconf mcp resolve filesystem
@@ -169,7 +188,7 @@ create 的输入字段对应 ProviderCreate、ModelEndpointCreate、MCPServerCre
 }
 ```
 
-TUI 导航为 Provider、模型端点、MCP、能力目录、迁移帮助。三类连接资源支持列表、详情、创建、编辑、删除，模型和 MCP 有独立解析预览。MCP 根据 transport 切换 stdio/HTTP 表单，自定义 transport 使用 JSON。编辑先预览再确认，取消不写入，默认隐藏已保存的秘密。
+TUI 分为模型 Provider、模型端点、MCP Provider、MCP 服务、能力目录和迁移帮助。MCP transport 必须通过下拉选择 stdio／Streamable HTTP／自定义，Provider 下拉显示名称、保存 UUID。认证可继承或显式覆盖，常规流程不需要手写占位符。headers／env 使用键值编辑，args 逐项添加／删除，同时保留高级 JSON。掩码按项保留；删除一项不清掉其他秘密。先预览再确认，取消不写入，短终端通过滚动和 Tab 访问完整表单。
 
 ## 能力目录与手动更新
 
@@ -202,7 +221,7 @@ agentconf catalog update --plan /tmp/update.json --apply-all --types llm,embeddi
 
 ## 旧库迁移、Agent 导出与重试
 
-旧 0/2/3/4 库必须显式迁到 5。在备份副本先演练，并停止其它配置写者：
+旧 0/2/3/4/5 库必须显式迁到 6。在备份副本先演练，并停止其它配置写者：
 
 ```sh
 agentconf migrate prepare --db-path /path/config.db --plan-out /tmp/migration.json
@@ -211,11 +230,11 @@ agentconf migrate prepare --db-path /path/config.db --formats /tmp/formats.json 
 agentconf migrate apply --plan /tmp/migration.json
 ```
 
-schema 5 也会先验证真实表结构和数据；发现多余旧表或损坏字段时明确报错，不会仅根据版本号报告“无需迁移”。旧 SDK 0.1.0 会在打开新版库时重新创建旧表，切换前必须统一全部配置写者的 SDK。
+schema 6 也会先验证真实表结构和数据；发现多余旧表或损坏字段时明确报错，不会仅根据版本号报告“无需迁移”。旧 SDK 0.1.0 会在打开新版库时重新创建旧表，切换前必须统一全部配置写者的 SDK。
 
 prepare 只读，冻结源路径、版本、完整摘要、接口格式、能力键搬迁和 Agent→端点映射，不包含采样参数值/凭据。已知旧 LLM 格式为 openai→Chat Completions、anthropic→Messages、deepseek→Chat Completions。其它不猜测，unresolved 非空不能 apply。可用 --relocations 指定 local 能力键搬迁映射。
 
-apply 获取写锁后重验，在同一事务完成全部转换，不提交 schema 4 中间态。先用 SQLite backup 保存包含 WAL 的 0600 原库备份，再持久化 0600 Agent 导出，才移除旧 Agent 表。保留 Provider/模型绑定 ID、时间、能力声明和引用；已有库不重新灌种子。旧非 NULL 覆盖/映射、自定义结构、损坏引用或未来版本仍会阻止迁移，不能自动清空旧值。
+apply 获取写锁后重验，在同一事务完成全部转换，不提交 schema 4／5 中间态。先用 SQLite backup 保存包含 WAL 的 0600 原库备份，再持久化 0600 Agent 导出，才移除旧 Agent 表。保留 Provider/模型绑定 ID、时间、能力声明和引用；已有库不重新灌种子。旧非 NULL 覆盖/映射、自定义结构、损坏引用或未来版本仍会阻止迁移，不能自动清空旧值。
 
 Agent 导出格式 export_version=1，包含 migration_id、源 schema/摘要、checksum、完整 agents 列表。每项含 agent_id/name、endpoint_id/name、model_name、创建/更新时间及 request_params（temperature、top_p、top_k、max_tokens、extra_params，包含显式 0/False/None）。下游据此转换名称和请求参数；多个旧 Agent 可映射同一端点。
 
@@ -232,3 +251,32 @@ uv build
 ```
 
 来源、许可与固定快照重建命令见 [随包能力种子](src/agentconf/data/README.md)。真实模型数据使用 models.dev MIT 许可，代码与虚构示例使用 Apache-2.0。发行包不依赖 OpenAI、Anthropic 或 MCP 客户端。
+
+### Schema 5 的 MCP 认证映射
+
+旧 credential_ref 不会自动猜成 Provider 名称或 UUID；未解决关联会阻止 apply。用 `--mcp-map` 指定 JSON，计划中只写身份与字段路径，不写 Key。例如从旧模型 Provider 复制共享 Key：
+
+```json
+{
+  "providers": [{
+    "id": "<新 MCP Provider UUID>", "name": "vendor/work-account",
+    "source_model_provider_id": "<旧模型 Provider ID>",
+    "default_binding": {"target": "http_header", "name": "Authorization", "value_template": "Bearer {{auth}}"}
+  }],
+  "servers": {
+    "<旧 Server ID>": {
+      "auth": {"mode": "provider", "provider_id": "<新 MCP Provider UUID>", "binding_mode": "inherit"},
+      "remove_fields": [["headers", "Authorization"]]
+    }
+  }
+}
+```
+
+```sh
+agentconf migrate prepare --db-path /path/config.db --mcp-map /tmp/mcp-map.json --plan-out /tmp/migration.json
+agentconf migrate apply --plan /tmp/migration.json
+```
+
+只有原 Header 存在时才填写 remove_fields。多个 Server 可引用同一目标 UUID。也可用 source_server_id、source_field（如 `["headers", "Authorization"]`）与显式 strip_prefix 从旧静态字段提取 Key。原模型 Provider 保留，复制后的 MCP Key 独立维护。旧任意引用可显式迁为 external，静态 headers／env 保留 inline；需要动态占位符而没有映射时拒绝迁移。
+
+迁移计划版本为 3，旧版计划需重新 prepare。schema 5 没有旧 Agent 表，不生成虚构 Agent 导出；0／2／3／4 来源仍先导出旧 Agent，导出保留历史 v1 契约。应用后的写入会使原计划失效；不能用旧计划覆盖后来配置。

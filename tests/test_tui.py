@@ -7,6 +7,7 @@ from agentconf.tui.app import agentconfApp
 from agentconf.tui.screens.resource_screens import ResourceEditDialog
 from agentconf.tui.screens.catalog_screens import ProfileEditDialog
 from test_catalog_lineage import old_catalog
+from agentconf.tui.widgets.connection_editors import CollectionEditor
 
 SECRET = "UI-PRIVATE-SENTINEL"
 
@@ -80,7 +81,8 @@ def test_provider_endpoint_and_mcp_create_preview_edit_resolve_cancel_delete(tmp
             await pilot.pause()
             app.screen.query_one("#res-name", Input).value = "tools"
             app.screen.query_one("#mcp-command", Input).value = "python"
-            app.screen.query_one("#mcp-args", TextArea).load_text(json.dumps([SECRET]))
+            editor = app.screen.query_one("#mcp-args", CollectionEditor)
+            await editor.query_one(".entry-rows").mount(*editor.rows([SECRET]))
             app.screen.on_confirm()
             app.screen.on_confirm()
             await pilot.pause()
@@ -89,8 +91,15 @@ def test_provider_endpoint_and_mcp_create_preview_edit_resolve_cancel_delete(tmp
             ).settings.args.get_secret_value() == [SECRET]
             assert await pilot.click("#mcp-edit")
             await pilot.pause()
-            assert SECRET not in app.screen.query_one("#mcp-args", TextArea).text
-            app.screen.query_one("#mcp-args", TextArea).load_text("[]")
+            assert SECRET not in str(
+                [
+                    w.value
+                    for w in app.screen.query_one("#mcp-args", CollectionEditor).query(
+                        Input
+                    )
+                ]
+            )
+            await app.screen.query_one("#mcp-args .entry-rows").remove_children()
             app.screen.on_confirm()
             app.screen.on_confirm()
             await pilot.pause()
@@ -118,14 +127,13 @@ def test_mcp_transport_forms_custom_json_and_stale_edit(tmp_path):
             app.push_screen(ResourceEditDialog("mcp"))
             await pilot.pause()
             app.screen.query_one("#res-name", Input).value = "http"
-            app.screen.query_one("#mcp-transport", Input).value = "streamable_http"
+            app.screen.query_one("#mcp-transport", Select).value = "streamable_http"
             await pilot.pause()
             assert app.screen.query_one("#http-fields").display
             assert not app.screen.query_one("#stdio-fields").display
             app.screen.query_one("#mcp-url", Input).value = "https://host.invalid/mcp"
-            app.screen.query_one("#mcp-headers", TextArea).load_text(
-                json.dumps({"Key": SECRET})
-            )
+            editor = app.screen.query_one("#mcp-headers", CollectionEditor)
+            await editor.query_one(".entry-rows").mount(*editor.rows({"Key": SECRET}))
             app.screen.on_confirm()
             app.screen.on_confirm()
             await pilot.pause()
@@ -142,7 +150,10 @@ def test_mcp_transport_forms_custom_json_and_stale_edit(tmp_path):
             app.push_screen(ResourceEditDialog("mcp"))
             await pilot.pause()
             app.screen.query_one("#res-name", Input).value = "custom"
-            app.screen.query_one("#mcp-transport", Input).value = "future-transport"
+            app.screen.query_one("#mcp-transport", Select).value = "custom"
+            app.screen.query_one(
+                "#mcp-custom-transport", Input
+            ).value = "future-transport"
             await pilot.pause()
             assert app.screen.query_one("#custom-fields").display
             app.screen.query_one("#mcp-custom", TextArea).load_text(

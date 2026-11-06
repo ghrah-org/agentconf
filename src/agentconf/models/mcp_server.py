@@ -16,6 +16,13 @@ from pydantic import (
     model_validator,
 )
 from agentconf.models.base import generate_uuid
+from agentconf.models.mcp_provider import (
+    MCPAuth,
+    NoAuth,
+    ProviderAuth,
+    ExternalAuth,
+    CredentialBinding,
+)
 from agentconf.models.secure import SafeModel, SecretJSON
 
 Timeout = Annotated[float, Field(gt=0, strict=True)]
@@ -39,7 +46,6 @@ class StdioConnection(SafeModel):
 class StreamableHTTPConnection(SafeModel):
     url: SecretStr
     headers: Secret[dict[str, StrictStr]] = Field(default_factory=lambda: Secret({}))
-    credential_ref: SecretStr | None = None
     connect_timeout: Timeout | None = None
     protocol_version_hint: str | None = None
 
@@ -62,13 +68,6 @@ class StreamableHTTPConnection(SafeModel):
             raise ValueError("MCP HTTP 地址必须是合法 HTTP(S) URL") from None
         return value
 
-    @field_validator("credential_ref")
-    @classmethod
-    def nonblank(cls, value):
-        if value is not None and not value.get_secret_value().strip():
-            raise ValueError("凭据引用不得为空")
-        return value
-
 
 class GenericMCPConnection(SafeModel):
     options: SecretJSON
@@ -81,6 +80,7 @@ class MCPServerCreate(SafeModel):
     name: str = Field(min_length=1)
     transport: str = Field(min_length=1)
     settings: MCPConnection
+    auth: MCPAuth = Field(default_factory=NoAuth)
 
     @model_validator(mode="before")
     @classmethod
@@ -107,6 +107,25 @@ class MCPServerCreate(SafeModel):
             raise ValueError("settings 必须为连接设置对象")
         return data
 
+    @model_validator(mode="after")
+    def validate_auth(self):
+        binding = (
+            self.auth.binding
+            if isinstance(self.auth, (ProviderAuth, ExternalAuth))
+            else None
+        )
+        validate_binding(self.transport, self.settings, binding)
+        values = (
+            self.settings.headers
+            if isinstance(self.settings, StreamableHTTPConnection)
+            else self.settings.env
+            if isinstance(self.settings, StdioConnection)
+            else None
+        )
+        if values and any("{{auth}}" in v for v in values.get_secret_value().values()):
+            raise ValueError("凭据模板应放在认证绑定中")
+        return self
+
     @field_validator("name", "transport")
     @classmethod
     def nonblank(cls, value):
@@ -128,3 +147,25 @@ class MCPServerUpdate(SafeModel):
     name: str | None = None
     transport: str | None = None
     settings: SecretJSON | None = None
+    auth: MCPAuth | None = None
+
+
+def validate_binding(
+    transport: str, settings: MCPConnection, binding: CredentialBinding | None
+) -> None:
+    """验证有效认证绑定的传输类型与字面连接参数冲突。"""
+    if binding is None:
+        return
+    expected = {"http_header": "streamable_http", "stdio_env": "stdio"}[binding.target]
+    if transport != expected:
+        raise ValueError("认证绑定与 transport 不匹配")
+    if isinstance(settings, StreamableHTTPConnection):
+        if binding.name.lower() in {
+            name.lower() for name in settings.headers.get_secret_value()
+        }:
+            raise ValueError("认证请求头与连接 headers 冲突")
+    elif (
+        isinstance(settings, StdioConnection)
+        and binding.name in settings.env.get_secret_value()
+    ):
+        raise ValueError("认证环境变量与连接 env 冲突")

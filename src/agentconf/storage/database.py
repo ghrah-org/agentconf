@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""四表 schema；初始化离线，已有旧库只允许显式迁移。"""
+"""五表 schema；初始化离线，已有旧库只允许显式迁移。"""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from agentconf.storage.catalog_repo import PROFILE_COLUMNS, insert_profile, read
 from agentconf.models.capability_profile import CapabilityProfile
 from agentconf.storage.resources import ResourceRepository, SPEC
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 PROVIDERS_SQL = """CREATE TABLE providers (
  id TEXT PRIMARY KEY NOT NULL, name TEXT NOT NULL UNIQUE CHECK(length(trim(name))>0),
  provider_type TEXT NOT NULL, base_url TEXT NOT NULL, api_key TEXT,
@@ -26,13 +26,25 @@ MODELS_SQL = """CREATE TABLE model_endpoints (
  capabilities_key TEXT REFERENCES model_capabilities(model_key) ON DELETE RESTRICT ON UPDATE RESTRICT,
  revision INTEGER NOT NULL DEFAULT 1 CHECK(revision>0), created_at TEXT NOT NULL, updated_at TEXT NOT NULL
 )"""
+MCP_PROVIDERS_SQL = """CREATE TABLE mcp_providers (
+ id TEXT PRIMARY KEY NOT NULL, name TEXT NOT NULL UNIQUE CHECK(length(trim(name))>0),
+ vendor TEXT, api_key TEXT, default_binding_json TEXT,
+ revision INTEGER NOT NULL DEFAULT 1 CHECK(revision>0), created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+)"""
 MCP_SQL = """CREATE TABLE mcp_servers (
  id TEXT PRIMARY KEY NOT NULL, name TEXT NOT NULL UNIQUE CHECK(length(trim(name))>0),
  transport TEXT NOT NULL CHECK(length(trim(transport))>0), settings_json TEXT NOT NULL DEFAULT '{}',
- revision INTEGER NOT NULL DEFAULT 1 CHECK(revision>0), created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+ mcp_provider_id TEXT REFERENCES mcp_providers(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+ auth_mode TEXT NOT NULL CHECK(auth_mode IN ('none','inline','provider','external')),
+ auth_settings_json TEXT NOT NULL DEFAULT '{}',
+ revision INTEGER NOT NULL DEFAULT 1 CHECK(revision>0), created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+ CHECK((auth_mode='provider') = (mcp_provider_id IS NOT NULL))
 )"""
 CATALOG_SQL = catalog_sql()
-SCHEMA_SQL = ";\n".join((PROVIDERS_SQL, CATALOG_SQL, MODELS_SQL, MCP_SQL)) + ";"
+SCHEMA_SQL = (
+    ";\n".join((PROVIDERS_SQL, CATALOG_SQL, MODELS_SQL, MCP_PROVIDERS_SQL, MCP_SQL))
+    + ";"
+)
 
 
 class Database(LegacyDatabase):
@@ -41,18 +53,30 @@ class Database(LegacyDatabase):
         tables = self._tables()
         if not tables and version == 0:
             return True
-        if version == 5:
+        if version == 6:
             expected = {
                 "providers",
                 "model_endpoints",
                 "model_capabilities",
                 "mcp_servers",
+                "mcp_providers",
             }
             columns = {
                 "providers": set(SPEC["providers"][0].model_fields),
                 "model_endpoints": set(SPEC["model_endpoints"][0].model_fields),
-                "mcp_servers": (set(SPEC["mcp_servers"][0].model_fields) - {"settings"})
-                | {"settings_json"},
+                "mcp_servers": (
+                    set(SPEC["mcp_servers"][0].model_fields) - {"settings", "auth"}
+                )
+                | {
+                    "settings_json",
+                    "auth_mode",
+                    "auth_settings_json",
+                    "mcp_provider_id",
+                },
+                "mcp_providers": (
+                    set(SPEC["mcp_providers"][0].model_fields) - {"default_binding"}
+                )
+                | {"default_binding_json"},
                 "model_capabilities": set(PROFILE_COLUMNS),
             }
             differences = {
@@ -70,7 +94,35 @@ class Database(LegacyDatabase):
                     f"unexpected_tables={sorted(tables - expected)}, "
                     f"column_differences={differences}"
                 )
+            foreign = self.conn.execute(
+                "PRAGMA foreign_key_list(mcp_servers)"
+            ).fetchall()
+            if not any(
+                row[2] == "mcp_providers"
+                and row[3] == "mcp_provider_id"
+                and row[5] == "RESTRICT"
+                and row[6] == "RESTRICT"
+                for row in foreign
+            ):
+                raise MigrationError("MCP Provider 外键结构不一致")
+            sql = self.conn.execute(
+                "SELECT sql FROM sqlite_master WHERE name='mcp_servers'"
+            ).fetchone()[0]
+            if (
+                "CHECK((auth_mode='provider') = (mcp_provider_id IS NOT NULL))"
+                not in sql
+            ):
+                raise MigrationError("MCP 认证约束结构不一致")
             return False
+        if version == 5:
+            from agentconf.storage.schema_v5 import Database as Schema5
+
+            old = Schema5(self.db_path)
+            old._connection = self.conn
+            old._preflight()
+            raise MigrationRequiredError(
+                "schema 5 需要显式迁移到 schema 6，请使用 migrate prepare/apply"
+            )
         legacy = LegacyDatabase(self.db_path)
         legacy._connection = self.conn
         legacy._preflight()
@@ -88,11 +140,17 @@ class Database(LegacyDatabase):
             if not self._preflight():
                 conn.rollback()
                 return
-            for sql in (PROVIDERS_SQL, CATALOG_SQL, MODELS_SQL, MCP_SQL):
+            for sql in (
+                PROVIDERS_SQL,
+                CATALOG_SQL,
+                MODELS_SQL,
+                MCP_PROVIDERS_SQL,
+                MCP_SQL,
+            ):
                 conn.execute(sql)
             self._seed()
             self._validate_rows()
-            conn.execute("PRAGMA user_version=5")
+            conn.execute("PRAGMA user_version=6")
             conn.commit()
         except BaseException:
             conn.rollback()
@@ -115,7 +173,11 @@ class Database(LegacyDatabase):
         if self.conn.execute("PRAGMA foreign_key_check").fetchall():
             raise MigrationError("迁移外键校验失败")
         for table in SPEC:
-            ResourceRepository(self.conn, table).list()
+            repo = ResourceRepository(self.conn, table)
+            rows = repo.list()
+            if table == "mcp_servers":
+                for row in rows:
+                    repo.validate_mcp(row)
         for row in self.conn.execute("SELECT * FROM model_capabilities"):
             profile = read_profile(row)
             if profile.derived_from:

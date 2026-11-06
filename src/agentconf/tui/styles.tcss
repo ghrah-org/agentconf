@@ -135,3 +135,12 @@ DataTable {
 .settings-form { height: auto; }
 .resource-json { height: 14; min-height: 4; }
 .compact-json { height: 4; }
+
+.collection-editor, .entry-rows, .binding-editor, .binding-custom { height: auto; }
+.editor-actions, .entry-row { height: 3; }
+.entry-key { width: 1fr; }
+.entry-value { width: 2fr; }
+.entry-delete { width: 8; min-width: 8; }
+.editor-actions Button { width: auto; min-width: 10; }
+#resource-preview { height: 8; }
+#mcp-provider-hint { width: 100%; height: auto; }

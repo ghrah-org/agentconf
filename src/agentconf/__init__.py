@@ -66,7 +66,7 @@ from agentconf.exceptions import (
     LegacyAPIError,
 )
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 __all__ = [
     "AgentsConfig",
     "CatalogSnapshot",
@@ -128,4 +128,31 @@ __all__ = [
     "ResourceInUseError",
     "RevisionConflictError",
     "LegacyAPIError",
+]
+
+from agentconf.models.mcp_provider import (
+    CredentialBinding,
+    NoAuth,
+    InlineAuth,
+    ProviderAuth,
+    ExternalAuth,
+    MCPProvider,
+    MCPProviderCreate,
+    MCPProviderUpdate,
+    ResolvedMCPAuth,
+)
+from agentconf.exceptions import MCPProviderNotFoundError, MCPCredentialMissingError
+
+__all__ += [
+    "CredentialBinding",
+    "NoAuth",
+    "InlineAuth",
+    "ProviderAuth",
+    "ExternalAuth",
+    "MCPProvider",
+    "MCPProviderCreate",
+    "MCPProviderUpdate",
+    "ResolvedMCPAuth",
+    "MCPProviderNotFoundError",
+    "MCPCredentialMissingError",
 ]
